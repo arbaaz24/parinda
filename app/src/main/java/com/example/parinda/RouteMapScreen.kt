@@ -28,11 +28,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONObject
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
@@ -64,7 +59,6 @@ private const val TO_START_ROUTE_LAYER_ID = "to-start-route-layer"
 fun RouteMapScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val httpClient = remember { OkHttpClient() }
 
     // State
     var gpxData by remember { mutableStateOf<GpxData?>(null) }
@@ -97,67 +91,8 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
         if (isLocationEnabled() && hasLocationPermission && wantsToTrack) {
             isTracking = true
             isLoadingLocation = true
-            // Aggressively get location ASAP for fast green dot + orange line
-            try {
-                val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-                @SuppressLint("MissingPermission")
-                fun getLocationFast() {
-                    // 1. Try last known from all providers immediately
-                    val providers = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER, LocationManager.PASSIVE_PROVIDER)
-                    var bestLoc: Location? = null
-                    for (p in providers) {
-                        try {
-                            val loc = locationManager.getLastKnownLocation(p)
-                            if (loc != null && (bestLoc == null || loc.time > bestLoc.time)) {
-                                bestLoc = loc
-                            }
-                        } catch (_: Exception) { }
-                    }
-                    bestLoc?.let { loc ->
-                        val initialLoc = LatLng(loc.latitude, loc.longitude)
-                        userLocation = initialLoc
-                        isLoadingLocation = false
-                        mapReadyState.value?.let { (map, style) ->
-                            style.getSourceAs<GeoJsonSource>(USER_LOCATION_SOURCE_ID)?.setGeoJson(
-                                FeatureCollection.fromFeature(
-                                    Feature.fromGeometry(Point.fromLngLat(initialLoc.longitude, initialLoc.latitude))
-                                )
-                            )
-                            map.animateCamera(CameraUpdateFactory.newLatLngZoom(initialLoc, 14.0))
-                        }
-                    }
-
-                    // 2. Request a single fresh update from NETWORK (faster than GPS)
-                    if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                        locationManager.requestSingleUpdate(
-                            LocationManager.NETWORK_PROVIDER,
-                            object : LocationListener {
-                                override fun onLocationChanged(loc: Location) {
-                                    val freshLoc = LatLng(loc.latitude, loc.longitude)
-                                    userLocation = freshLoc
-                                    isLoadingLocation = false
-                                    mapReadyState.value?.let { (map, style) ->
-                                        style.getSourceAs<GeoJsonSource>(USER_LOCATION_SOURCE_ID)?.setGeoJson(
-                                            FeatureCollection.fromFeature(
-                                                Feature.fromGeometry(Point.fromLngLat(freshLoc.longitude, freshLoc.latitude))
-                                            )
-                                        )
-                                        map.animateCamera(CameraUpdateFactory.newLatLngZoom(freshLoc, 14.0))
-                                    }
-                                }
-                                @Deprecated("Deprecated in Java")
-                                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
-                                override fun onProviderEnabled(provider: String) {}
-                                override fun onProviderDisabled(provider: String) {}
-                            },
-                            null
-                        )
-                    }
-                }
-                getLocationFast()
-            } catch (_: SecurityException) { 
-                isLoadingLocation = false
-            }
+            // Standard flow: the tracking DisposableEffect registers location updates and
+            // bootstraps with last-known location when possible.
         }
     }
 
@@ -380,7 +315,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxSize()) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
+            factory = { _ ->
                 mapView.also { view ->
                     view.getMapAsync { map ->
                         map.setStyle(DEFAULT_STYLE_URL) { style ->
@@ -575,46 +510,4 @@ private fun distanceMeters(a: LatLng, b: LatLng): Float {
     val results = FloatArray(1)
     Location.distanceBetween(a.latitude, a.longitude, b.latitude, b.longitude, results)
     return results[0]
-}
-
-private suspend fun fetchOsrmRouteLineString(
-    client: OkHttpClient,
-    from: LatLng,
-    to: LatLng
-): LineString? = withContext(Dispatchers.IO) {
-    // OSRM demo server (MVP). Swap to your own OSRM/Valhalla endpoint for production.
-    val url = buildString {
-        append("https://router.project-osrm.org/route/v1/driving/")
-        append(from.longitude)
-        append(',')
-        append(from.latitude)
-        append(';')
-        append(to.longitude)
-        append(',')
-        append(to.latitude)
-        append("?overview=full&geometries=geojson")
-    }
-
-    val request = Request.Builder().url(url).get().build()
-    client.newCall(request).execute().use { response ->
-        if (!response.isSuccessful) return@withContext null
-        val body = response.body?.string() ?: return@withContext null
-
-        val json = JSONObject(body)
-        val routes = json.optJSONArray("routes") ?: return@withContext null
-        if (routes.length() == 0) return@withContext null
-        val route0 = routes.getJSONObject(0)
-        val geometry = route0.optJSONObject("geometry") ?: return@withContext null
-        val coords = geometry.optJSONArray("coordinates") ?: return@withContext null
-
-        val points = ArrayList<Point>(coords.length())
-        for (i in 0 until coords.length()) {
-            val c = coords.getJSONArray(i)
-            val lon = c.getDouble(0)
-            val lat = c.getDouble(1)
-            points.add(Point.fromLngLat(lon, lat))
-        }
-        if (points.size < 2) return@withContext null
-        LineString.fromLngLats(points)
-    }
 }
