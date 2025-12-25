@@ -1,0 +1,92 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# ============================
+# Android / Gradle
+# ============================
+.gradle/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+gradle-app.setting
+
+# Local configuration
+local.properties
+
+# ============================
+# Android Studio / IntelliJ
+# ============================
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Android-specific
+.cxx/
+.externalNativeBuild/
+captures/
+
+# ============================
+# Kotlin / Java
+# ============================
+.kotlinc/
+*.class
+
+# ============================
+# Jetpack Compose (if used)
+# ============================
+compose-metrics/
+compose-reports/
+
+# ============================
+# Lint
+# ============================
+lint/intermediates/
+lint/generated/
+lint/outputs/
+lint/tmp/
+
+# ============================
+# Firebase / Crashlytics
+# ============================
+crashlytics-build.properties
+fabric.properties
+
+# ============================
+# OS Junk
+# ============================
+.DS_Store
+Thumbs.db
+
+# ============================
+# Logs
+# ============================
+*.log
+
+# ============================
+# Secrets / Keys
+# ============================
+*.jks
+*.keystore
+*.env
+*.env.*
+secrets.properties
+
+# ============================
+# React Native (if ever used)
+# ============================
+node_modules/
+yarn-error.log
+npm-debug.log
