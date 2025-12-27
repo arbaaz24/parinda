@@ -343,6 +343,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                 add(
                     Feature.fromGeometry(Point.fromLngLat(start.lon, start.lat)).apply {
                         addStringProperty("icon", START_ICON_ID)
+                        addStringProperty("desc", start.desc ?: start.name ?: "Start")
                     }
                 )
             }
@@ -350,6 +351,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                 add(
                     Feature.fromGeometry(Point.fromLngLat(end.lon, end.lat)).apply {
                         addStringProperty("icon", END_ICON_ID)
+                        addStringProperty("desc", end.desc ?: end.name ?: "End")
                     }
                 )
             }
@@ -545,7 +547,8 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                     screenPoint.x + tolerance,
                                     screenPoint.y + tolerance
                                 )
-                                val features = map.queryRenderedFeatures(box, WAYPOINTS_LAYER_ID)
+                                // Check Start/End symbols first, then stop dots
+                                val features = map.queryRenderedFeatures(box, START_END_LAYER_ID, WAYPOINTS_LAYER_ID)
                                 Log.d("RouteMapScreen", "Tap detected, features found: ${features.size}")
 
                                 if (features.isNotEmpty()) {
