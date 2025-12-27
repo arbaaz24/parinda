@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
@@ -16,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
@@ -98,47 +101,49 @@ fun ExploreScreen(modifier: Modifier = Modifier) {
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.End
             ) {
-                TextButton(
-                    enabled = !isLoading && errorMessage == null,
-                    onClick = { isCountryMenuOpen = true }
-                ) {
-                    Text("Filter")
-                }
+                Box(modifier = Modifier.wrapContentSize(Alignment.TopEnd)) {
+                    TextButton(
+                        enabled = !isLoading && errorMessage == null,
+                        onClick = { isCountryMenuOpen = true }
+                    ) {
+                        Text("Filter")
+                    }
 
-                DropdownMenu(
-                    expanded = isCountryMenuOpen,
-                    onDismissRequest = { isCountryMenuOpen = false }
-                ) {
-                    if (isLoading) {
-                        DropdownMenuItem(
-                            text = { Text("Loading countries...") },
-                            onClick = { },
-                            enabled = false
-                        )
-                    } else {
-                        DropdownMenuItem(
-                            text = { Text("All") },
-                            onClick = {
-                                selectedCountry = null
-                                isCountryMenuOpen = false
-                            }
-                        )
-
-                        if (countries.isEmpty()) {
+                    DropdownMenu(
+                        expanded = isCountryMenuOpen,
+                        onDismissRequest = { isCountryMenuOpen = false }
+                    ) {
+                        if (isLoading) {
                             DropdownMenuItem(
-                                text = { Text("No countries in data") },
+                                text = { Text("Loading countries...") },
                                 onClick = { },
                                 enabled = false
                             )
                         } else {
-                            countries.forEach { country ->
+                            DropdownMenuItem(
+                                text = { Text("All") },
+                                onClick = {
+                                    selectedCountry = null
+                                    isCountryMenuOpen = false
+                                }
+                            )
+
+                            if (countries.isEmpty()) {
                                 DropdownMenuItem(
-                                    text = { Text(country) },
-                                    onClick = {
-                                        selectedCountry = country
-                                        isCountryMenuOpen = false
-                                    }
+                                    text = { Text("No countries in data") },
+                                    onClick = { },
+                                    enabled = false
                                 )
+                            } else {
+                                countries.forEach { country ->
+                                    DropdownMenuItem(
+                                        text = { Text(country) },
+                                        onClick = {
+                                            selectedCountry = country
+                                            isCountryMenuOpen = false
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
