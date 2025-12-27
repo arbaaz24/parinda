@@ -499,10 +499,12 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                 )
                                 val features = map.queryRenderedFeatures(box, WAYPOINTS_LAYER_ID)
                                 Log.d("RouteMapScreen", "Tap detected, features found: ${features.size}")
+
                                 if (features.isNotEmpty()) {
                                     val feature = features.first()
                                     val desc = feature.getStringProperty("desc") ?: ""
                                     Log.d("RouteMapScreen", "Waypoint tapped, desc: $desc")
+
                                     val geometry = feature.geometry()
                                     if (geometry is Point) {
                                         val displayText = desc.ifEmpty { "Waypoint" }
@@ -510,15 +512,15 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                         selectedCallout = calloutLatLng to displayText
                                         selectedCalloutScreenPoint = map.projection.toScreenLocation(calloutLatLng)
                                     }
-                                    true
-                                } else {
-                                    // Clicked elsewhere, dismiss callout
-                                    if (selectedCallout != null) {
-                                        selectedCallout = null
-                                        selectedCalloutScreenPoint = null
-                                    }
-                                    false
+                                    return@addOnMapClickListener true
                                 }
+
+                                // Clicked elsewhere: dismiss callout
+                                if (selectedCallout != null) {
+                                    selectedCallout = null
+                                    selectedCalloutScreenPoint = null
+                                }
+                                return@addOnMapClickListener false
                             }
 
                             // Keep the callout anchored to the tapped waypoint while the map moves/rotates.
@@ -599,12 +601,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
             }
 
             if (gpxData != null) {
-                val stopsText = if (gpxData!!.stops.isNotEmpty()) "${gpxData!!.stops.size} stops" else "no stops"
-                Text("Route: ${gpxData!!.trackPoints.size} points, $stopsText")
-                
-                if (isTracking && userLocation != null) {
-                    Text("📍 Tracking: ${String.format("%.5f", userLocation!!.latitude)}, ${String.format("%.5f", userLocation!!.longitude)}")
-                }
+                Text("${gpxData!!.stops.size} stop(s)")
 
                 if (!isTracking) {
                     Button(onClick = {
