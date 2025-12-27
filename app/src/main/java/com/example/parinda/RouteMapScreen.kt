@@ -11,6 +11,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PointF
 import android.graphics.RectF
+import kotlin.math.max
 import android.location.Location
 import android.util.Log
 import android.location.LocationListener
@@ -71,6 +72,11 @@ private const val NAV_ARROW_LAYER_ID = "nav-arrow-layer"
 private const val NAV_ARROW_IMAGE_ID = "nav-arrow-image"
 private const val ROUTE_ARROWS_SOURCE_ID = "route-arrows-source"
 private const val ROUTE_ARROWS_LAYER_ID = "route-arrows-layer"
+
+private const val START_END_SOURCE_ID = "start-end-source"
+private const val START_END_LAYER_ID = "start-end-layer"
+private const val START_ICON_ID = "start-icon"
+private const val END_ICON_ID = "end-icon"
 
 private const val ROUTE_ARROW_SPACING_METERS = 100f
 
@@ -331,6 +337,26 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
         val waypointsSource = style.getSourceAs<GeoJsonSource>(WAYPOINTS_SOURCE_ID)
         waypointsSource?.setGeoJson(FeatureCollection.fromFeatures(waypointFeatures))
 
+        // Start/End markers (symbols)
+        val startEndFeatures = buildList {
+            data.startPoint?.let { start ->
+                add(
+                    Feature.fromGeometry(Point.fromLngLat(start.lon, start.lat)).apply {
+                        addStringProperty("icon", START_ICON_ID)
+                    }
+                )
+            }
+            data.endPoint?.let { end ->
+                add(
+                    Feature.fromGeometry(Point.fromLngLat(end.lon, end.lat)).apply {
+                        addStringProperty("icon", END_ICON_ID)
+                    }
+                )
+            }
+        }
+        style.getSourceAs<GeoJsonSource>(START_END_SOURCE_ID)
+            ?.setGeoJson(FeatureCollection.fromFeatures(startEndFeatures))
+
         // Route direction arrows
         val arrowFeatures = buildRouteArrowFeatures(data.trackPoints, ROUTE_ARROW_SPACING_METERS)
         style.getSourceAs<GeoJsonSource>(ROUTE_ARROWS_SOURCE_ID)
@@ -394,6 +420,9 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                             if (style.getSource(WAYPOINTS_SOURCE_ID) == null) {
                                 style.addSource(GeoJsonSource(WAYPOINTS_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
                             }
+                            if (style.getSource(START_END_SOURCE_ID) == null) {
+                                style.addSource(GeoJsonSource(START_END_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
+                            }
                             if (style.getSource(USER_LOCATION_SOURCE_ID) == null) {
                                 style.addSource(GeoJsonSource(USER_LOCATION_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
                             }
@@ -444,6 +473,25 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                         circleColor(Color.RED),
                                         circleStrokeWidth(2f),
                                         circleStrokeColor(Color.WHITE)
+                                    )
+                                )
+                            }
+
+                            // Start/End markers layer (symbols)
+                            if (style.getImage(START_ICON_ID) == null) {
+                                style.addImage(START_ICON_ID, createStartEndMarkerBitmap(fillColor = Color.parseColor("#2E7D32"), label = "Start"))
+                            }
+                            if (style.getImage(END_ICON_ID) == null) {
+                                style.addImage(END_ICON_ID, createStartEndMarkerBitmap(fillColor = Color.parseColor("#1565C0"), label = "End"))
+                            }
+                            if (style.getLayer(START_END_LAYER_ID) == null) {
+                                style.addLayer(
+                                    SymbolLayer(START_END_LAYER_ID, START_END_SOURCE_ID).withProperties(
+                                        iconImage(Expression.get("icon")),
+                                        iconAllowOverlap(true),
+                                        iconIgnorePlacement(true),
+                                        iconSize(1.0f),
+                                        iconAnchor(Property.ICON_ANCHOR_BOTTOM)
                                     )
                                 )
                             }
@@ -855,5 +903,55 @@ private fun createNavArrowBitmap(): Bitmap {
 
     canvas.drawPath(path, paint)
     canvas.drawPath(path, stroke)
+    return bmp
+}
+
+private fun createStartEndMarkerBitmap(fillColor: Int, label: String): Bitmap {
+    val size = 96
+    val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bmp)
+
+    // Marker: circle with a small stem (simple pin feel)
+    val centerX = size / 2f
+    val centerY = size / 2f - 10f
+    val radius = 26f
+
+    val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = fillColor
+    }
+    val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 6f
+        color = Color.WHITE
+    }
+
+    canvas.drawCircle(centerX, centerY, radius, fillPaint)
+    canvas.drawCircle(centerX, centerY, radius, strokePaint)
+
+    val stemPath = Path().apply {
+        moveTo(centerX, centerY + radius - 2f)
+        lineTo(centerX - 10f, size - 18f)
+        lineTo(centerX + 10f, size - 18f)
+        close()
+    }
+    canvas.drawPath(stemPath, fillPaint)
+    canvas.drawPath(stemPath, strokePaint)
+
+    val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        textSize = 30f
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+
+    // Shrink text to fit within the circle for longer labels (e.g. "Start")
+    val maxTextWidth = radius * 1.6f
+    while (textPaint.measureText(label) > maxTextWidth && textPaint.textSize > 14f) {
+        textPaint.textSize -= 2f
+    }
+    val textY = centerY - (textPaint.descent() + textPaint.ascent()) / 2f
+    canvas.drawText(label, centerX, textY, textPaint)
+
     return bmp
 }
