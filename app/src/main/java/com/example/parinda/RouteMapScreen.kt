@@ -420,7 +420,8 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                         iconAllowOverlap(true),
                                         iconIgnorePlacement(true),
                                         iconSize(0.55f),
-                                        iconRotate(Expression.get("bearing"))
+                                        iconRotate(Expression.get("bearing")),
+                                        iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP)
                                     )
                                 )
                             }
