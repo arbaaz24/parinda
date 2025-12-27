@@ -3,19 +3,21 @@
     "name": "Freddie Dobbs",
     "description": "I love travel, motorcycles, cars, beautiful places, coffee spots, great roads and interesting people..",
     "channelUrl": "https://www.youtube.com/@FreddieDobbs",
-    "avatarUrl": "https://example.com/itchy.jpg"
+    "avatarUrl": "https://example.com/itchy.jpg",
+    "country": "UK"
   },
   {
     "name": "Itchy Boots",
     "description": "Solo adventure rides around the world.",
     "channelUrl": "https://www.youtube.com/@ItchyBoots",
-    "avatarUrl": "https://example.com/itchy.jpg"
+    "avatarUrl": "https://example.com/itchy.jpg",
+    "country": "St. Africa"
   },
   {
     "name": "Jake Rides Away",
     "description": "I live is the USA and love riding cross country.",
     "channelUrl": "https://www.youtube.com/@jakeridesaway",
-    "avatarUrl": "https://example.com/itchy.jpg"
-    
+    "avatarUrl": "https://example.com/itchy.jpg",
+    "country": "USA"
   }
 ]
