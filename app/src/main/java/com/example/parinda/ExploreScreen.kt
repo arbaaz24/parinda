@@ -27,6 +27,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,6 +51,7 @@ fun ExploreScreen(modifier: Modifier = Modifier) {
 
     var isCountryMenuOpen by rememberSaveable { mutableStateOf(false) }
     var selectedCountry by rememberSaveable { mutableStateOf<String?>(null) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         isLoading = true
@@ -87,10 +89,15 @@ fun ExploreScreen(modifier: Modifier = Modifier) {
             .sorted()
     }
 
-    val filtered = remember(motovloggers, selectedCountry) {
+    val filtered = remember(motovloggers, selectedCountry, searchQuery) {
         val country = selectedCountry
-        if (country.isNullOrBlank()) motovloggers
-        else motovloggers.filter { it.country?.equals(country, ignoreCase = true) == true }
+        val byCountry =
+            if (country.isNullOrBlank()) motovloggers
+            else motovloggers.filter { it.country?.equals(country, ignoreCase = true) == true }
+
+        val query = searchQuery.trim()
+        if (query.isBlank()) byCountry
+        else byCountry.filter { it.name.contains(query, ignoreCase = true) }
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -101,6 +108,16 @@ fun ExploreScreen(modifier: Modifier = Modifier) {
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.End
             ) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp),
+                    singleLine = true,
+                    placeholder = { Text("Search") }
+                )
+
                 Box(modifier = Modifier.wrapContentSize(Alignment.TopEnd)) {
                     TextButton(
                         enabled = !isLoading && errorMessage == null,
