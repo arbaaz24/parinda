@@ -17,6 +17,8 @@ now i want a map that has the directions(possibly the same route), stops made by
 * we can also contribute to the open source maps when routes are turned in
 * i like restaurants too, maybe a partnership with them, the remote the restaurant the better
 * it can can also be a platform to match riders that have chosen same journey > can there be a way they could see each other's location, i was thinking a slight heat map to show other riders, but will it distract the riders? A/B test
+* 
+* venture4wd - this channel uploads his gpx (camping, long trips) on patreon, reach out to him after your mvp is ready.
 
 
 

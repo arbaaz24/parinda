@@ -25,13 +25,44 @@ data class GpxData(
     val stops: List<GpxPoint>
 )
 
+private enum class WaypointRole { START, END, STOP }
+
+private fun waypointRoleFromName(name: String?): WaypointRole? {
+    val trimmed = name?.trim() ?: return null
+    val lower = trimmed.lowercase()
+
+    // Allow plain names for convenience
+    if (lower == "start") return WaypointRole.START
+    if (lower == "end" || lower == "finish") return WaypointRole.END
+
+    val prefix = "_waypoint_"
+    if (!lower.startsWith(prefix)) return null
+
+    val remainder = lower.removePrefix(prefix).trim()
+    val roleToken = remainder.split(Regex("[_\\s]+"), limit = 2)
+        .firstOrNull()
+        ?.trim()
+        .orEmpty()
+
+    return when (roleToken) {
+        "start" -> WaypointRole.START
+        "end", "finish" -> WaypointRole.END
+        "stop" -> WaypointRole.STOP
+        else -> WaypointRole.STOP
+    }
+}
+
 /**
  * Parses a GPX file from an InputStream.
  * Extracts <trkpt> elements as track points and <wpt> elements as waypoints.
- * Identifies start, end, and stop points based on:
- * - Waypoint names containing "start", "end", "stop", "finish", etc.
- * - Waypoint <type> tags
- * - Falls back to first/last track point if no explicit start/end waypoints
+ * Identifies start, end, and stop points based on waypoint naming:
+ * - Only waypoints whose <name> starts with "_waypoint_" are considered, plus plain "start"/"end".
+ * - Preferred roles:
+ *   - "_waypoint_start" => start
+ *   - "_waypoint_end"   => end
+ *   - "_waypoint_stop"  => stop
+ * - Any other "_waypoint_*" is treated as a stop.
+ * - Falls back to first/last track point if no explicit start/end waypoints.
  */
 fun parseGpx(inputStream: InputStream): GpxData {
     val factory = XmlPullParserFactory.newInstance()
@@ -91,7 +122,11 @@ fun parseGpx(inputStream: InputStream): GpxData {
                 when (tagName) {
                     "wpt" -> {
                         if (currentLat != null && currentLon != null) {
-                            waypoints.add(GpxPoint(currentLat, currentLon, currentName, currentType))
+                            // Only consider "_waypoint_*" plus plain "start"/"end".
+                            // All other <wpt> entries are ignored.
+                            if (waypointRoleFromName(currentName) != null) {
+                                waypoints.add(GpxPoint(currentLat, currentLon, currentName, currentType))
+                            }
                         }
                         inWpt = false
                         currentLat = null
@@ -127,28 +162,10 @@ fun parseGpx(inputStream: InputStream): GpxData {
     val stops = mutableListOf<GpxPoint>()
 
     for (wpt in waypoints) {
-        val nameLower = wpt.name?.lowercase() ?: ""
-        val typeLower = wpt.type?.lowercase() ?: ""
-        
-        when {
-            // Check for start indicators
-            nameLower.contains("start") || typeLower.contains("start") -> {
-                if (startPoint == null) startPoint = wpt
-            }
-            // Check for end/finish indicators
-            nameLower.contains("end") || nameLower.contains("finish") || 
-            typeLower.contains("end") || typeLower.contains("finish") -> {
-                if (endPoint == null) endPoint = wpt
-            }
-            // Check for stop indicators
-            nameLower.contains("stop") || nameLower.contains("waypoint") || 
-            typeLower.contains("stop") || typeLower.contains("waypoint") -> {
-                stops.add(wpt)
-            }
-            // Default: treat unnamed/untyped waypoints as stops
-            else -> {
-                stops.add(wpt)
-            }
+        when (waypointRoleFromName(wpt.name) ?: WaypointRole.STOP) {
+            WaypointRole.START -> if (startPoint == null) startPoint = wpt
+            WaypointRole.END -> if (endPoint == null) endPoint = wpt
+            WaypointRole.STOP -> stops.add(wpt)
         }
     }
 

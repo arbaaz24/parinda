@@ -4,7 +4,11 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.location.Location
 import android.util.Log
 import android.location.LocationListener
@@ -34,10 +38,12 @@ import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory.*
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
@@ -54,6 +60,16 @@ private const val USER_LOCATION_SOURCE_ID = "user-location-source"
 private const val USER_LOCATION_LAYER_ID = "user-location-layer"
 private const val TO_START_ROUTE_SOURCE_ID = "to-start-route-source"
 private const val TO_START_ROUTE_LAYER_ID = "to-start-route-layer"
+private const val NAV_ARROW_SOURCE_ID = "nav-arrow-source"
+private const val NAV_ARROW_LAYER_ID = "nav-arrow-layer"
+private const val NAV_ARROW_IMAGE_ID = "nav-arrow-image"
+private const val ROUTE_ARROWS_SOURCE_ID = "route-arrows-source"
+private const val ROUTE_ARROWS_LAYER_ID = "route-arrows-layer"
+
+private const val ROUTE_ARROW_SPACING_METERS = 100f
+
+private const val NAV_TRIGGER_METERS = 5f
+private const val NAV_ZOOM_LEVEL = 17.0
 
 @Composable
 fun RouteMapScreen(modifier: Modifier = Modifier) {
@@ -67,10 +83,16 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
     var wantsToTrack by remember { mutableStateOf(false) }
     var userLocation by remember { mutableStateOf<LatLng?>(null) }
     var isLoadingLocation by remember { mutableStateOf(false) }
+    var isNavigationMode by remember { mutableStateOf(false) }
+    var isFollowingUser by remember { mutableStateOf(true) }
+    var lastBearingFrom by remember { mutableStateOf<LatLng?>(null) }
     val mapReadyState = remember { mutableStateOf<Pair<MapLibreMap, Style>?>(null) }
     val mapReady by mapReadyState
     var lastRoutedFrom by remember { mutableStateOf<LatLng?>(null) }
     var lastRoutedAtMs by remember { mutableLongStateOf(0L) }
+
+    val latestGpxData by rememberUpdatedState(gpxData)
+    val latestIsNavigationMode by rememberUpdatedState(isNavigationMode)
 
     // Permission state
     var hasLocationPermission by remember { mutableStateOf(false) }
@@ -164,23 +186,62 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         var activeListener: LocationListener? = null
 
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
-                val newLoc = LatLng(location.latitude, location.longitude)
-                userLocation = newLoc
-                isLoadingLocation = false
-                
-                // Update map source directly
-                mapReady?.let { (map, style) ->
-                    val userSource = style.getSourceAs<GeoJsonSource>(USER_LOCATION_SOURCE_ID)
-                    userSource?.setGeoJson(
+        fun updateUserAndMaybeNavigate(newLoc: LatLng, bearingDeg: Float?) {
+            userLocation = newLoc
+            isLoadingLocation = false
+
+            val data = latestGpxData
+            val start = data?.startPoint?.let { LatLng(it.lat, it.lon) }
+
+            if (!isNavigationMode && data != null && start != null && data.trackPoints.isNotEmpty()) {
+                val nearStart = distanceMeters(newLoc, start) <= NAV_TRIGGER_METERS
+                val routeDistance = distanceToRouteMeters(newLoc, data.trackPoints)
+                val nearRoute = routeDistance != null && routeDistance <= NAV_TRIGGER_METERS
+
+                if (nearStart || nearRoute) {
+                    isNavigationMode = true
+                    isFollowingUser = true
+                    Log.d("RouteMapScreen", "Entering navigation mode (nearStart=$nearStart nearRoute=$nearRoute distToRoute=$routeDistance)")
+                }
+            }
+
+            mapReady?.let { (map, style) ->
+                style.getSourceAs<GeoJsonSource>(USER_LOCATION_SOURCE_ID)
+                    ?.setGeoJson(
                         FeatureCollection.fromFeature(
                             Feature.fromGeometry(Point.fromLngLat(newLoc.longitude, newLoc.latitude))
                         )
                     )
-                    // Center on user
+
+                // Arrow marker (navigation mode)
+                if (isNavigationMode) {
+                    val feature = Feature.fromGeometry(Point.fromLngLat(newLoc.longitude, newLoc.latitude))
+                    val bearingToUse = bearingDeg ?: 0f
+                    feature.addNumberProperty("bearing", bearingToUse.toDouble())
+                    style.getSourceAs<GeoJsonSource>(NAV_ARROW_SOURCE_ID)
+                        ?.setGeoJson(FeatureCollection.fromFeature(feature))
+
+                    if (isFollowingUser) {
+                        map.animateCamera(CameraUpdateFactory.newLatLngZoom(newLoc, NAV_ZOOM_LEVEL))
+                    }
+                } else {
+                    // Default behavior (non-navigation): keep centering like before.
                     map.animateCamera(CameraUpdateFactory.newLatLng(newLoc))
                 }
+            }
+        }
+
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                val newLoc = LatLng(location.latitude, location.longitude)
+                val bearingDeg = when {
+                    location.hasBearing() -> location.bearing
+                    lastBearingFrom != null -> bearingDegrees(lastBearingFrom!!, newLoc)
+                    else -> null
+                }
+                lastBearingFrom = newLoc
+
+                updateUserAndMaybeNavigate(newLoc, bearingDeg)
             }
             @Deprecated("Deprecated in Java")
             override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
@@ -204,16 +265,8 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                 }
                 bestLoc?.let { loc ->
                     val initialLoc = LatLng(loc.latitude, loc.longitude)
-                    userLocation = initialLoc
-                    isLoadingLocation = false
-                    mapReady?.let { (map, style) ->
-                        style.getSourceAs<GeoJsonSource>(USER_LOCATION_SOURCE_ID)?.setGeoJson(
-                            FeatureCollection.fromFeature(
-                                Feature.fromGeometry(Point.fromLngLat(initialLoc.longitude, initialLoc.latitude))
-                            )
-                        )
-                        map.animateCamera(CameraUpdateFactory.newLatLngZoom(initialLoc, 14.0))
-                    }
+                    lastBearingFrom = initialLoc
+                    updateUserAndMaybeNavigate(initialLoc, loc.bearing.takeIf { loc.hasBearing() })
                 }
 
                 // Network-first (fast), then GPS (accurate). Register both if available.
@@ -267,6 +320,11 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
         }
         val waypointsSource = style.getSourceAs<GeoJsonSource>(WAYPOINTS_SOURCE_ID)
         waypointsSource?.setGeoJson(FeatureCollection.fromFeatures(waypointFeatures))
+
+        // Route direction arrows
+        val arrowFeatures = buildRouteArrowFeatures(data.trackPoints, ROUTE_ARROW_SPACING_METERS)
+        style.getSourceAs<GeoJsonSource>(ROUTE_ARROWS_SOURCE_ID)
+            ?.setGeoJson(FeatureCollection.fromFeatures(arrowFeatures))
     }
 
     // MVP: online routing from current location -> GPX start point (shown if same country)
@@ -332,6 +390,12 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                             if (style.getSource(TO_START_ROUTE_SOURCE_ID) == null) {
                                 style.addSource(GeoJsonSource(TO_START_ROUTE_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
                             }
+                            if (style.getSource(NAV_ARROW_SOURCE_ID) == null) {
+                                style.addSource(GeoJsonSource(NAV_ARROW_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
+                            }
+                            if (style.getSource(ROUTE_ARROWS_SOURCE_ID) == null) {
+                                style.addSource(GeoJsonSource(ROUTE_ARROWS_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
+                            }
 
                             // Route layer (blue line)
                             if (style.getLayer(ROUTE_LAYER_ID) == null) {
@@ -341,6 +405,22 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                         lineWidth(5f),
                                         lineCap(Property.LINE_CAP_ROUND),
                                         lineJoin(Property.LINE_JOIN_ROUND)
+                                    )
+                                )
+                            }
+
+                            // Route arrows layer (direction along the route)
+                            if (style.getImage(NAV_ARROW_IMAGE_ID) == null) {
+                                style.addImage(NAV_ARROW_IMAGE_ID, createNavArrowBitmap())
+                            }
+                            if (style.getLayer(ROUTE_ARROWS_LAYER_ID) == null) {
+                                style.addLayer(
+                                    SymbolLayer(ROUTE_ARROWS_LAYER_ID, ROUTE_ARROWS_SOURCE_ID).withProperties(
+                                        iconImage(NAV_ARROW_IMAGE_ID),
+                                        iconAllowOverlap(true),
+                                        iconIgnorePlacement(true),
+                                        iconSize(0.55f),
+                                        iconRotate(Expression.get("bearing"))
                                     )
                                 )
                             }
@@ -369,6 +449,19 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                 )
                             }
 
+                            // Navigation arrow layer (only populated in navigation mode)
+                            if (style.getLayer(NAV_ARROW_LAYER_ID) == null) {
+                                style.addLayer(
+                                    SymbolLayer(NAV_ARROW_LAYER_ID, NAV_ARROW_SOURCE_ID).withProperties(
+                                        iconImage(NAV_ARROW_IMAGE_ID),
+                                        iconAllowOverlap(true),
+                                        iconIgnorePlacement(true),
+                                        iconSize(1.0f),
+                                        iconRotate(Expression.get("bearing"))
+                                    )
+                                )
+                            }
+
                             // MVP: online "to start" route layer (orange)
                             if (style.getLayer(TO_START_ROUTE_LAYER_ID) == null) {
                                 style.addLayer(
@@ -386,6 +479,15 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                             map.animateCamera(
                                 CameraUpdateFactory.newLatLngZoom(LatLng(20.5937, 78.9629), 3.5)
                             )
+
+                            // If the user pans/zooms the map during navigation mode, stop auto-follow.
+                            map.addOnCameraMoveStartedListener { reason ->
+                                if (latestIsNavigationMode &&
+                                    reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE
+                                ) {
+                                    isFollowingUser = false
+                                }
+                            }
 
                             mapReadyState.value = map to style
                         }
@@ -447,7 +549,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                             )
                         }
                     }) {
-                        Text("Start Journey")
+                        Text("Go to chosen route")
                     }
                 } else {
                     // Show loading indicator when waiting for location
@@ -460,6 +562,9 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                         wantsToTrack = false
                         userLocation = null
                         isLoadingLocation = false
+                        isNavigationMode = false
+                        isFollowingUser = true
+                        lastBearingFrom = null
                         lastRoutedFrom = null
                         lastRoutedAtMs = 0L
                         // Clear green dot and orange route from map
@@ -468,9 +573,35 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                 ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
                             style.getSourceAs<GeoJsonSource>(TO_START_ROUTE_SOURCE_ID)
                                 ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+                            style.getSourceAs<GeoJsonSource>(NAV_ARROW_SOURCE_ID)
+                                ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
                         }
                     }) {
-                        Text("Stop Journey")
+                        Text("Stop")
+                    }
+
+                    if (isNavigationMode) {
+                        Button(onClick = {
+                            isNavigationMode = false
+                            isFollowingUser = true
+                            mapReady?.let { (_, style) ->
+                                style.getSourceAs<GeoJsonSource>(NAV_ARROW_SOURCE_ID)
+                                    ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+                            }
+                        }) {
+                            Text("Exit Navigation")
+                        }
+
+                        Button(onClick = {
+                            isFollowingUser = true
+                            userLocation?.let { loc ->
+                                mapReady?.let { (map, _) ->
+                                    map.animateCamera(CameraUpdateFactory.newLatLngZoom(loc, NAV_ZOOM_LEVEL))
+                                }
+                            }
+                        }) {
+                            Text("Re-center")
+                        }
                     }
                 }
             }
@@ -510,4 +641,144 @@ private fun distanceMeters(a: LatLng, b: LatLng): Float {
     val results = FloatArray(1)
     Location.distanceBetween(a.latitude, a.longitude, b.latitude, b.longitude, results)
     return results[0]
+}
+
+private fun bearingDegrees(from: LatLng, to: LatLng): Float {
+    val lat1 = Math.toRadians(from.latitude)
+    val lat2 = Math.toRadians(to.latitude)
+    val dLon = Math.toRadians(to.longitude - from.longitude)
+    val y = Math.sin(dLon) * Math.cos(lat2)
+    val x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon)
+    val brng = Math.toDegrees(Math.atan2(y, x))
+    val normalized = (brng + 360.0) % 360.0
+    return normalized.toFloat()
+}
+
+private fun distanceToRouteMeters(user: LatLng, trackPoints: List<GpxPoint>): Float? {
+    if (trackPoints.size < 2) return null
+
+    val r = 6_371_000.0 // meters
+    val lat0 = Math.toRadians(user.latitude)
+    val lon0 = Math.toRadians(user.longitude)
+    val cosLat0 = Math.cos(lat0)
+
+    fun toLocalMeters(p: GpxPoint): Pair<Double, Double> {
+        val lat = Math.toRadians(p.lat)
+        val lon = Math.toRadians(p.lon)
+        val dx = (lon - lon0) * cosLat0 * r
+        val dy = (lat - lat0) * r
+        return dx to dy
+    }
+
+    var minDistSq = Double.POSITIVE_INFINITY
+    var prev = toLocalMeters(trackPoints[0])
+    for (i in 1 until trackPoints.size) {
+        val cur = toLocalMeters(trackPoints[i])
+        val x1 = prev.first
+        val y1 = prev.second
+        val x2 = cur.first
+        val y2 = cur.second
+        val vx = x2 - x1
+        val vy = y2 - y1
+        val lenSq = vx * vx + vy * vy
+
+        val t = if (lenSq <= 0.0) 0.0 else {
+            // User point is origin (0,0); projection of origin onto segment
+            val proj = (-(x1 * vx + y1 * vy)) / lenSq
+            proj.coerceIn(0.0, 1.0)
+        }
+
+        val cx = x1 + t * vx
+        val cy = y1 + t * vy
+        val distSq = cx * cx + cy * cy
+        if (distSq < minDistSq) minDistSq = distSq
+        prev = cur
+    }
+    return Math.sqrt(minDistSq).toFloat()
+}
+
+private fun buildRouteArrowFeatures(trackPoints: List<GpxPoint>, spacingMeters: Float): List<Feature> {
+    if (trackPoints.size < 2) return emptyList()
+    if (spacingMeters <= 0f) return emptyList()
+
+    val features = ArrayList<Feature>()
+    val maxArrows = 500
+
+    fun segmentDistanceMeters(a: GpxPoint, b: GpxPoint): Float {
+        val results = FloatArray(1)
+        Location.distanceBetween(a.lat, a.lon, b.lat, b.lon, results)
+        return results[0]
+    }
+
+    fun interpolate(a: GpxPoint, b: GpxPoint, t: Float): LatLng {
+        val lat = a.lat + (b.lat - a.lat) * t
+        val lon = a.lon + (b.lon - a.lon) * t
+        return LatLng(lat, lon)
+    }
+
+    var carry = 0f
+    var prev = trackPoints[0]
+    for (i in 1 until trackPoints.size) {
+        val next = trackPoints[i]
+        var segDist = segmentDistanceMeters(prev, next)
+        if (segDist <= 0f) {
+            prev = next
+            continue
+        }
+
+        val segBearing = bearingDegrees(LatLng(prev.lat, prev.lon), LatLng(next.lat, next.lon))
+
+        var localPrev = prev
+        while (carry + segDist >= spacingMeters) {
+            if (features.size >= maxArrows) return features
+
+            val remaining = spacingMeters - carry
+            val t = (remaining / segDist).coerceIn(0f, 1f)
+            val p = interpolate(localPrev, next, t)
+
+            val f = Feature.fromGeometry(Point.fromLngLat(p.longitude, p.latitude))
+            f.addNumberProperty("bearing", segBearing.toDouble())
+            features.add(f)
+
+            // Continue on the same segment from this inserted point
+            carry = 0f
+            localPrev = GpxPoint(p.latitude, p.longitude)
+            segDist -= remaining
+            if (segDist <= 0f) break
+        }
+
+        carry += segDist
+        prev = next
+    }
+
+    return features
+}
+
+private fun createNavArrowBitmap(): Bitmap {
+    // Simple white arrow/triangle pointing "up" (0°). Rotation is handled by the SymbolLayer.
+    val size = 64
+    val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bmp)
+
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+    }
+
+    val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        color = Color.BLACK
+    }
+
+    val path = Path().apply {
+        moveTo(size / 2f, 6f)
+        lineTo(10f, size - 10f)
+        lineTo(size - 10f, size - 10f)
+        close()
+    }
+
+    canvas.drawPath(path, paint)
+    canvas.drawPath(path, stroke)
+    return bmp
 }
