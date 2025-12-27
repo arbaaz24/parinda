@@ -5,13 +5,14 @@ import org.xmlpull.v1.XmlPullParserFactory
 import java.io.InputStream
 
 /**
- * Represents a single point (lat/lon) with optional name (for waypoints/stops).
+ * Represents a single point (lat/lon) with optional name and description (for waypoints/stops).
  */
 data class GpxPoint(
     val lat: Double,
     val lon: Double,
     val name: String? = null,
-    val type: String? = null
+    val type: String? = null,
+    val desc: String? = null
 )
 
 /**
@@ -77,10 +78,12 @@ fun parseGpx(inputStream: InputStream): GpxData {
     var currentLon: Double? = null
     var currentName: String? = null
     var currentType: String? = null
+    var currentDesc: String? = null
     var inWpt = false
     var inTrkpt = false
     var inName = false
     var inType = false
+    var inDesc = false
 
     var eventType = parser.eventType
     while (eventType != XmlPullParser.END_DOCUMENT) {
@@ -109,6 +112,9 @@ fun parseGpx(inputStream: InputStream): GpxData {
                     "type" -> {
                         if (inWpt) inType = true
                     }
+                    "desc" -> {
+                        if (inWpt) inDesc = true
+                    }
                 }
             }
             XmlPullParser.TEXT -> {
@@ -116,6 +122,8 @@ fun parseGpx(inputStream: InputStream): GpxData {
                     currentName = parser.text?.trim()
                 } else if (inType) {
                     currentType = parser.text?.trim()
+                } else if (inDesc) {
+                    currentDesc = parser.text?.trim()
                 }
             }
             XmlPullParser.END_TAG -> {
@@ -125,7 +133,7 @@ fun parseGpx(inputStream: InputStream): GpxData {
                             // Only consider "_waypoint_*" plus plain "start"/"end".
                             // All other <wpt> entries are ignored.
                             if (waypointRoleFromName(currentName) != null) {
-                                waypoints.add(GpxPoint(currentLat, currentLon, currentName, currentType))
+                                waypoints.add(GpxPoint(currentLat, currentLon, currentName, currentType, currentDesc))
                             }
                         }
                         inWpt = false
@@ -133,6 +141,7 @@ fun parseGpx(inputStream: InputStream): GpxData {
                         currentLon = null
                         currentName = null
                         currentType = null
+                        currentDesc = null
                     }
                     "trkpt" -> {
                         if (currentLat != null && currentLon != null) {
@@ -149,6 +158,9 @@ fun parseGpx(inputStream: InputStream): GpxData {
                     }
                     "type" -> {
                         inType = false
+                    }
+                    "desc" -> {
+                        inDesc = false
                     }
                 }
             }

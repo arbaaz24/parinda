@@ -9,6 +9,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PointF
+import android.graphics.RectF
 import android.location.Location
 import android.util.Log
 import android.location.LocationListener
@@ -18,15 +20,18 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -49,6 +54,7 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
+import kotlin.math.roundToInt
 
 private const val DEFAULT_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 
@@ -86,6 +92,8 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
     var isNavigationMode by remember { mutableStateOf(false) }
     var isFollowingUser by remember { mutableStateOf(true) }
     var lastBearingFrom by remember { mutableStateOf<LatLng?>(null) }
+    var selectedCallout by remember { mutableStateOf<Pair<LatLng, String>?>(null) }
+    var selectedCalloutScreenPoint by remember { mutableStateOf<PointF?>(null) }
     val mapReadyState = remember { mutableStateOf<Pair<MapLibreMap, Style>?>(null) }
     val mapReady by mapReadyState
     var lastRoutedFrom by remember { mutableStateOf<LatLng?>(null) }
@@ -315,8 +323,10 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
         }
 
         // Stops (red circles)
-        val waypointFeatures = data.stops.map {
-            Feature.fromGeometry(Point.fromLngLat(it.lon, it.lat))
+        val waypointFeatures = data.stops.map { stop ->
+            Feature.fromGeometry(Point.fromLngLat(stop.lon, stop.lat)).apply {
+                addStringProperty("desc", stop.desc ?: stop.name ?: "")
+            }
         }
         val waypointsSource = style.getSourceAs<GeoJsonSource>(WAYPOINTS_SOURCE_ID)
         waypointsSource?.setGeoJson(FeatureCollection.fromFeatures(waypointFeatures))
@@ -476,6 +486,48 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                 )
                             }
 
+                            // Click listener for waypoints
+                            map.addOnMapClickListener { point ->
+                                val screenPoint = map.projection.toScreenLocation(point)
+                                // Use a 20px tap tolerance box
+                                val tolerance = 20f
+                                val box = RectF(
+                                    screenPoint.x - tolerance,
+                                    screenPoint.y - tolerance,
+                                    screenPoint.x + tolerance,
+                                    screenPoint.y + tolerance
+                                )
+                                val features = map.queryRenderedFeatures(box, WAYPOINTS_LAYER_ID)
+                                Log.d("RouteMapScreen", "Tap detected, features found: ${features.size}")
+                                if (features.isNotEmpty()) {
+                                    val feature = features.first()
+                                    val desc = feature.getStringProperty("desc") ?: ""
+                                    Log.d("RouteMapScreen", "Waypoint tapped, desc: $desc")
+                                    val geometry = feature.geometry()
+                                    if (geometry is Point) {
+                                        val displayText = desc.ifEmpty { "Waypoint" }
+                                        val calloutLatLng = LatLng(geometry.latitude(), geometry.longitude())
+                                        selectedCallout = calloutLatLng to displayText
+                                        selectedCalloutScreenPoint = map.projection.toScreenLocation(calloutLatLng)
+                                    }
+                                    true
+                                } else {
+                                    // Clicked elsewhere, dismiss callout
+                                    if (selectedCallout != null) {
+                                        selectedCallout = null
+                                        selectedCalloutScreenPoint = null
+                                    }
+                                    false
+                                }
+                            }
+
+                            // Keep the callout anchored to the tapped waypoint while the map moves/rotates.
+                            map.addOnCameraMoveListener {
+                                selectedCallout?.first?.let { latLng ->
+                                    selectedCalloutScreenPoint = map.projection.toScreenLocation(latLng)
+                                }
+                            }
+
                             // Default camera
                             map.animateCamera(
                                 CameraUpdateFactory.newLatLngZoom(LatLng(20.5937, 78.9629), 3.5)
@@ -496,6 +548,31 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                 }
             }
         )
+
+        // In-map callout (Compose overlay). This is not a system popup and can later host images too.
+        val callout = selectedCallout
+        val calloutPoint = selectedCalloutScreenPoint
+        if (callout != null && calloutPoint != null) {
+            Surface(
+                modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            x = calloutPoint.x.roundToInt() - 220,
+                            y = calloutPoint.y.roundToInt() - 180
+                        )
+                    }
+                    .clickable {
+                        selectedCallout = null
+                        selectedCalloutScreenPoint = null
+                    },
+                tonalElevation = 2.dp
+            ) {
+                Text(
+                    text = callout.second,
+                    modifier = Modifier.padding(10.dp)
+                )
+            }
+        }
 
         // Buttons overlay
         Column(
