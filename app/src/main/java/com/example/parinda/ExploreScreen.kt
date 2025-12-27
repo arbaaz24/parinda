@@ -63,8 +63,14 @@ fun ExploreScreen(modifier: Modifier = Modifier) {
                 }
             }
             motovloggers = loaded
+
+            // If the previously selected country no longer exists in the new dataset, clear it.
+            val available = loaded.mapNotNull { it.country?.trim()?.takeIf(String::isNotBlank) }
+            if (selectedCountry != null && available.none { it.equals(selectedCountry, ignoreCase = true) }) {
+                selectedCountry = null
+            }
         } catch (e: Exception) {
-            errorMessage = "Failed to load Explore list"
+            errorMessage = "Failed to load Explore list: ${e.message ?: "unknown error"}"
             motovloggers = emptyList()
         } finally {
             isLoading = false
@@ -92,37 +98,48 @@ fun ExploreScreen(modifier: Modifier = Modifier) {
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.End
             ) {
-                TextButton(onClick = { isCountryMenuOpen = true }) {
-                    Text(selectedCountry ?: "Filter")
+                TextButton(
+                    enabled = !isLoading && errorMessage == null,
+                    onClick = { isCountryMenuOpen = true }
+                ) {
+                    Text("Filter")
                 }
 
                 DropdownMenu(
                     expanded = isCountryMenuOpen,
                     onDismissRequest = { isCountryMenuOpen = false }
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("All") },
-                        onClick = {
-                            selectedCountry = null
-                            isCountryMenuOpen = false
-                        }
-                    )
-
-                    if (countries.isEmpty()) {
+                    if (isLoading) {
                         DropdownMenuItem(
-                            text = { Text("No countries in data") },
-                            onClick = { isCountryMenuOpen = false },
+                            text = { Text("Loading countries...") },
+                            onClick = { },
                             enabled = false
                         )
                     } else {
-                        countries.forEach { country ->
+                        DropdownMenuItem(
+                            text = { Text("All") },
+                            onClick = {
+                                selectedCountry = null
+                                isCountryMenuOpen = false
+                            }
+                        )
+
+                        if (countries.isEmpty()) {
                             DropdownMenuItem(
-                                text = { Text(country) },
-                                onClick = {
-                                    selectedCountry = country
-                                    isCountryMenuOpen = false
-                                }
+                                text = { Text("No countries in data") },
+                                onClick = { },
+                                enabled = false
                             )
+                        } else {
+                            countries.forEach { country ->
+                                DropdownMenuItem(
+                                    text = { Text(country) },
+                                    onClick = {
+                                        selectedCountry = country
+                                        isCountryMenuOpen = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
