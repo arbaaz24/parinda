@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
@@ -42,7 +43,10 @@ import org.json.JSONObject
 private const val MOTOVLOGGERS_URL = "https://arbaaz24.github.io/parinda/motovloggers.json"
 
 @Composable
-fun ExploreScreen(modifier: Modifier = Modifier) {
+fun ExploreScreen(
+    onOpenMotovlogger: (Motovlogger) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val httpClient = remember { OkHttpClient() }
 
     var motovloggers by remember { mutableStateOf<List<Motovlogger>>(emptyList()) }
@@ -189,7 +193,9 @@ fun ExploreScreen(modifier: Modifier = Modifier) {
             }
 
             items(filtered) { item ->
-                Surface {
+                Surface(
+                    modifier = Modifier.clickable { onOpenMotovlogger(item) }
+                ) {
                     ListItem(
                         headlineContent = { Text(item.name) },
                         supportingContent = {
@@ -209,8 +215,7 @@ fun ExploreScreen(modifier: Modifier = Modifier) {
                                 )
                             }
                         },
-                        modifier = Modifier
-                            .padding(horizontal = 8.dp)
+                        modifier = Modifier.padding(horizontal = 8.dp)
                     )
                 }
             }
@@ -218,7 +223,17 @@ fun ExploreScreen(modifier: Modifier = Modifier) {
     }
 }
 
-private data class Motovlogger(
+@Composable
+fun AsyncImage(
+    model: String,
+    contentDescription: String,
+    modifier: Modifier,
+    contentScale: ContentScale
+) {
+    TODO("Not yet implemented")
+}
+
+data class Motovlogger(
     val name: String,
     val description: String,
     val country: String? = null,

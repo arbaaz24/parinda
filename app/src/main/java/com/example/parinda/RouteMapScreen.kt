@@ -757,41 +757,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                         Text("⏳ Getting your location...")
                     }
                     
-                    Button(onClick = {
-                        isTracking = false
-                        wantsToTrack = false
-                        userLocation = null
-                        isLoadingLocation = false
-                        isNavigationMode = false
-                        isFollowingUser = true
-                        lastBearingFrom = null
-                        lastRoutedFrom = null
-                        lastRoutedAtMs = 0L
-                        // Clear green dot and orange route from map
-                        mapReady?.let { (_, style) ->
-                            style.getSourceAs<GeoJsonSource>(USER_LOCATION_SOURCE_ID)
-                                ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-                            style.getSourceAs<GeoJsonSource>(TO_START_ROUTE_SOURCE_ID)
-                                ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-                            style.getSourceAs<GeoJsonSource>(NAV_ARROW_SOURCE_ID)
-                                ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-                        }
-                    }) {
-                        Text("Stop")
-                    }
-
                     if (isNavigationMode) {
-                        Button(onClick = {
-                            isNavigationMode = false
-                            isFollowingUser = true
-                            mapReady?.let { (_, style) ->
-                                style.getSourceAs<GeoJsonSource>(NAV_ARROW_SOURCE_ID)
-                                    ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-                            }
-                        }) {
-                            Text("Exit Navigation")
-                        }
-
                         Button(onClick = {
                             isFollowingUser = true
                             userLocation?.let { loc ->
