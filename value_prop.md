@@ -19,6 +19,7 @@ now i want a map that has the directions(possibly the same route), stops made by
 * it can can also be a platform to match riders that have chosen same journey > can there be a way they could see each other's location, i was thinking a slight heat map to show other riders, but will it distract the riders? A/B test
 * Aribaba gave a nice idea from his game, where players meet at a common location and share/leave a memory
 * venture4wd - this channel uploads his gpx (camping, long trips) on patreon, reach out to him after your mvp is ready.
+* with stops like hotels on the way, the app should also suggest cheaper options around that area (in case it is not in someone's budget- mostly trips that are 7hr+)
 
 
 

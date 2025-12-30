@@ -56,6 +56,9 @@ import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import kotlin.math.roundToInt
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sqrt
 
 private const val DEFAULT_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 
@@ -80,8 +83,16 @@ private const val END_ICON_ID = "end-icon"
 
 private const val ROUTE_ARROW_SPACING_METERS = 100f
 
-private const val NAV_TRIGGER_METERS = 5f
+private const val NAV_TRIGGER_METERS = 50f
 private const val NAV_ZOOM_LEVEL = 17.0
+
+// GPS quality / smoothing (helps avoid huge jumps from bad fixes)
+private const val MAX_ACCEPTABLE_ACCURACY_METERS = 60f
+private const val IGNORE_NETWORK_WHEN_GPS_ACCURATE_METERS = 35f
+private const val IGNORE_NETWORK_AFTER_GOOD_GPS_MS = 12_000L
+private const val MAX_REASONABLE_SPEED_MPS = 80f // ~288 km/h
+private const val SNAP_TO_ROUTE_MAX_METERS = 35f
+private const val LOCATION_SMOOTHING_ALPHA = 0.35f
 
 @Composable
 fun RouteMapScreen(modifier: Modifier = Modifier) {
@@ -200,11 +211,65 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         var activeListener: LocationListener? = null
 
+        var lastAcceptedLoc: LatLng? = null
+        var lastAcceptedElapsedNs: Long? = null
+        var lastGoodGpsAtMs: Long? = null
+
+        fun acceptLocationFix(location: Location): Boolean {
+            // Reject very poor accuracy fixes (common with NETWORK_PROVIDER)
+            val acc = if (location.hasAccuracy()) location.accuracy else Float.POSITIVE_INFINITY
+            if (acc > MAX_ACCEPTABLE_ACCURACY_METERS) return false
+
+            // If we recently got a good GPS fix, ignore NETWORK_PROVIDER for a while
+            val provider = location.provider
+            val nowMs = System.currentTimeMillis()
+            if (provider == LocationManager.NETWORK_PROVIDER) {
+                val lastGood = lastGoodGpsAtMs
+                if (lastGood != null && (nowMs - lastGood) <= IGNORE_NETWORK_AFTER_GOOD_GPS_MS) {
+                    return false
+                }
+            }
+
+            // Reject teleport jumps based on implied speed
+            val prev = lastAcceptedLoc
+            val prevNs = lastAcceptedElapsedNs
+            val curNs = location.elapsedRealtimeNanos.takeIf { it > 0L }
+            if (prev != null && prevNs != null && curNs != null) {
+                val dtSec = ((curNs - prevNs).coerceAtLeast(0L)) / 1_000_000_000.0
+                if (dtSec > 0.2) {
+                    val cur = LatLng(location.latitude, location.longitude)
+                    val dist = distanceMeters(prev, cur)
+                    val speed = (dist / dtSec).toFloat()
+                    if (speed > MAX_REASONABLE_SPEED_MPS) return false
+                }
+            }
+
+            // Track last good GPS time
+            if (provider == LocationManager.GPS_PROVIDER && acc <= IGNORE_NETWORK_WHEN_GPS_ACCURATE_METERS) {
+                lastGoodGpsAtMs = nowMs
+            }
+
+            return true
+        }
+
+        fun smooth(prev: LatLng?, cur: LatLng): LatLng {
+            if (prev == null) return cur
+            val lat = prev.latitude + (cur.latitude - prev.latitude) * LOCATION_SMOOTHING_ALPHA
+            val lon = prev.longitude + (cur.longitude - prev.longitude) * LOCATION_SMOOTHING_ALPHA
+            return LatLng(lat, lon)
+        }
+
         fun updateUserAndMaybeNavigate(newLoc: LatLng, bearingDeg: Float?) {
-            userLocation = newLoc
+            // If we have a route and we are close to it, snap the displayed/navigation location to the route.
+            val data = latestGpxData
+            val snapped = data?.trackPoints?.takeIf { it.size >= 2 }?.let { track ->
+                nearestPointOnRoute(newLoc, track, SNAP_TO_ROUTE_MAX_METERS)
+            }
+            val locForNav = snapped ?: newLoc
+
+            userLocation = locForNav
             isLoadingLocation = false
 
-            val data = latestGpxData
             val start = data?.startPoint?.let { LatLng(it.lat, it.lon) }
 
             if (!isNavigationMode && data != null && start != null && data.trackPoints.isNotEmpty()) {
@@ -223,39 +288,48 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                 style.getSourceAs<GeoJsonSource>(USER_LOCATION_SOURCE_ID)
                     ?.setGeoJson(
                         FeatureCollection.fromFeature(
-                            Feature.fromGeometry(Point.fromLngLat(newLoc.longitude, newLoc.latitude))
+                            Feature.fromGeometry(Point.fromLngLat(locForNav.longitude, locForNav.latitude))
                         )
                     )
 
                 // Arrow marker (navigation mode)
                 if (isNavigationMode) {
-                    val feature = Feature.fromGeometry(Point.fromLngLat(newLoc.longitude, newLoc.latitude))
+                    val feature = Feature.fromGeometry(Point.fromLngLat(locForNav.longitude, locForNav.latitude))
                     val bearingToUse = bearingDeg ?: 0f
                     feature.addNumberProperty("bearing", bearingToUse.toDouble())
                     style.getSourceAs<GeoJsonSource>(NAV_ARROW_SOURCE_ID)
                         ?.setGeoJson(FeatureCollection.fromFeature(feature))
 
                     if (isFollowingUser) {
-                        map.animateCamera(CameraUpdateFactory.newLatLngZoom(newLoc, NAV_ZOOM_LEVEL))
+                        map.animateCamera(CameraUpdateFactory.newLatLngZoom(locForNav, NAV_ZOOM_LEVEL))
                     }
                 } else {
                     // Default behavior (non-navigation): keep centering like before.
-                    map.animateCamera(CameraUpdateFactory.newLatLng(newLoc))
+                    map.animateCamera(CameraUpdateFactory.newLatLng(locForNav))
                 }
             }
         }
 
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
+                if (!acceptLocationFix(location)) {
+                    return
+                }
+
                 val newLoc = LatLng(location.latitude, location.longitude)
+                val smoothedLoc = smooth(lastAcceptedLoc, newLoc)
+
                 val bearingDeg = when {
                     location.hasBearing() -> location.bearing
-                    lastBearingFrom != null -> bearingDegrees(lastBearingFrom!!, newLoc)
+                    lastBearingFrom != null -> bearingDegrees(lastBearingFrom!!, smoothedLoc)
                     else -> null
                 }
-                lastBearingFrom = newLoc
+                lastBearingFrom = smoothedLoc
 
-                updateUserAndMaybeNavigate(newLoc, bearingDeg)
+                lastAcceptedLoc = smoothedLoc
+                lastAcceptedElapsedNs = location.elapsedRealtimeNanos.takeIf { it > 0L }
+
+                updateUserAndMaybeNavigate(smoothedLoc, bearingDeg)
             }
             @Deprecated("Deprecated in Java")
             override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
@@ -683,41 +757,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                         Text("⏳ Getting your location...")
                     }
                     
-                    Button(onClick = {
-                        isTracking = false
-                        wantsToTrack = false
-                        userLocation = null
-                        isLoadingLocation = false
-                        isNavigationMode = false
-                        isFollowingUser = true
-                        lastBearingFrom = null
-                        lastRoutedFrom = null
-                        lastRoutedAtMs = 0L
-                        // Clear green dot and orange route from map
-                        mapReady?.let { (_, style) ->
-                            style.getSourceAs<GeoJsonSource>(USER_LOCATION_SOURCE_ID)
-                                ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-                            style.getSourceAs<GeoJsonSource>(TO_START_ROUTE_SOURCE_ID)
-                                ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-                            style.getSourceAs<GeoJsonSource>(NAV_ARROW_SOURCE_ID)
-                                ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-                        }
-                    }) {
-                        Text("Stop")
-                    }
-
                     if (isNavigationMode) {
-                        Button(onClick = {
-                            isNavigationMode = false
-                            isFollowingUser = true
-                            mapReady?.let { (_, style) ->
-                                style.getSourceAs<GeoJsonSource>(NAV_ARROW_SOURCE_ID)
-                                    ?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
-                            }
-                        }) {
-                            Text("Exit Navigation")
-                        }
-
                         Button(onClick = {
                             isFollowingUser = true
                             userLocation?.let { loc ->
@@ -821,6 +861,66 @@ private fun distanceToRouteMeters(user: LatLng, trackPoints: List<GpxPoint>): Fl
         prev = cur
     }
     return Math.sqrt(minDistSq).toFloat()
+}
+
+private fun nearestPointOnRoute(user: LatLng, trackPoints: List<GpxPoint>, maxSnapMeters: Float): LatLng? {
+    if (trackPoints.size < 2) return null
+
+    val r = 6_371_000.0 // meters
+    val lat0 = Math.toRadians(user.latitude)
+    val lon0 = Math.toRadians(user.longitude)
+    val cosLat0 = cos(lat0)
+
+    fun toLocalMeters(lat: Double, lon: Double): Pair<Double, Double> {
+        val latR = Math.toRadians(lat)
+        val lonR = Math.toRadians(lon)
+        val dx = (lonR - lon0) * cosLat0 * r
+        val dy = (latR - lat0) * r
+        return dx to dy
+    }
+
+    fun toLatLonFromLocal(dx: Double, dy: Double): LatLng {
+        val latR = lat0 + (dy / r)
+        val lonR = lon0 + (dx / (r * cosLat0))
+        return LatLng(Math.toDegrees(latR), Math.toDegrees(lonR))
+    }
+
+    var bestDistSq = Double.POSITIVE_INFINITY
+    var bestDx = 0.0
+    var bestDy = 0.0
+
+    var prev = toLocalMeters(trackPoints[0].lat, trackPoints[0].lon)
+    for (i in 1 until trackPoints.size) {
+        val cur = toLocalMeters(trackPoints[i].lat, trackPoints[i].lon)
+        val x1 = prev.first
+        val y1 = prev.second
+        val x2 = cur.first
+        val y2 = cur.second
+
+        val vx = x2 - x1
+        val vy = y2 - y1
+        val lenSq = vx * vx + vy * vy
+
+        val t = if (lenSq <= 0.0) 0.0 else {
+            val proj = (-(x1 * vx + y1 * vy)) / lenSq
+            proj.coerceIn(0.0, 1.0)
+        }
+
+        val cx = x1 + t * vx
+        val cy = y1 + t * vy
+        val distSq = cx * cx + cy * cy
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq
+            bestDx = cx
+            bestDy = cy
+        }
+
+        prev = cur
+    }
+
+    val dist = sqrt(bestDistSq)
+    if (dist > maxSnapMeters) return null
+    return toLatLonFromLocal(bestDx, bestDy)
 }
 
 private fun buildRouteArrowFeatures(trackPoints: List<GpxPoint>, spacingMeters: Float): List<Feature> {
