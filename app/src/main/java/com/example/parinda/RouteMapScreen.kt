@@ -55,6 +55,7 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
+import okhttp3.OkHttpClient
 import kotlin.math.roundToInt
 import kotlin.math.abs
 import kotlin.math.cos
@@ -101,6 +102,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
 
     // State
     var gpxData by remember { mutableStateOf<GpxData?>(null) }
+    var matchedTrackPoints by remember { mutableStateOf<List<GpxPoint>?>(null) }
     var gpxError by remember { mutableStateOf<String?>(null) }
     var isTracking by remember { mutableStateOf(false) }
     var wantsToTrack by remember { mutableStateOf(false) }
@@ -116,7 +118,10 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
     var lastRoutedFrom by remember { mutableStateOf<LatLng?>(null) }
     var lastRoutedAtMs by remember { mutableLongStateOf(0L) }
 
+    val mapboxHttpClient = remember { OkHttpClient() }
+
     val latestGpxData by rememberUpdatedState(gpxData)
+    val latestRouteTrackPoints by rememberUpdatedState(matchedTrackPoints ?: gpxData?.trackPoints)
     val latestIsNavigationMode by rememberUpdatedState(isNavigationMode)
 
     // Permission state
@@ -166,13 +171,46 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
             try {
                 gpxError = null
                 context.contentResolver.openInputStream(it)?.use { inputStream ->
-                    gpxData = parseGpx(inputStream)
+                    val parsed = parseGpx(inputStream)
+                    gpxData = parsed
+                    matchedTrackPoints = null
                 }
             } catch (e: Exception) {
                 gpxData = null
+                matchedTrackPoints = null
                 gpxError = "Failed to parse GPX file: ${e.message}"
                 Log.e("RouteMapScreen", "GPX parsing error", e)
             }
+        }
+    }
+
+    // Mapbox Map Matching: snap GPX track to the road network (improves alignment)
+    LaunchedEffect(gpxData) {
+        val data = gpxData ?: return@LaunchedEffect
+
+        val token = BuildConfig.MAPBOX_ACCESS_TOKEN.trim()
+        if (token.isBlank()) {
+            // Token not configured; keep raw GPX track.
+            return@LaunchedEffect
+        }
+
+        if (data.trackPoints.size < 2) return@LaunchedEffect
+        try {
+            // Minimal use of matching: snap each input point (tracepoints).
+            // No directions, no returned route geometry.
+            Log.d("RouteMapScreen", "Calling Mapbox matching: points=${data.trackPoints.size}")
+            matchedTrackPoints = MapboxMapMatching.snapDrivingTrace(
+                accessToken = token,
+                trace = data.trackPoints,
+                httpClient = mapboxHttpClient
+            )
+            Log.d(
+                "RouteMapScreen",
+                "Mapbox matching done: snappedPoints=${matchedTrackPoints?.size ?: 0}"
+            )
+        } catch (e: Exception) {
+            matchedTrackPoints = null
+            Log.e("RouteMapScreen", "Map matching error", e)
         }
     }
 
@@ -262,8 +300,9 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
         fun updateUserAndMaybeNavigate(newLoc: LatLng, bearingDeg: Float?) {
             // If we have a route and we are close to it, snap the displayed/navigation location to the route.
             val data = latestGpxData
-            val snapped = data?.trackPoints?.takeIf { it.size >= 2 }?.let { track ->
-                nearestPointOnRoute(newLoc, track, SNAP_TO_ROUTE_MAX_METERS)
+            val track = latestRouteTrackPoints
+            val snapped = track?.takeIf { it.size >= 2 }?.let { t ->
+                nearestPointOnRoute(newLoc, t, SNAP_TO_ROUTE_MAX_METERS)
             }
             val locForNav = snapped ?: newLoc
 
@@ -272,9 +311,9 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
 
             val start = data?.startPoint?.let { LatLng(it.lat, it.lon) }
 
-            if (!isNavigationMode && data != null && start != null && data.trackPoints.isNotEmpty()) {
+            if (!isNavigationMode && data != null && start != null && !track.isNullOrEmpty()) {
                 val nearStart = distanceMeters(newLoc, start) <= NAV_TRIGGER_METERS
-                val routeDistance = distanceToRouteMeters(newLoc, data.trackPoints)
+                val routeDistance = distanceToRouteMeters(newLoc, track)
                 val nearRoute = routeDistance != null && routeDistance <= NAV_TRIGGER_METERS
 
                 if (nearStart || nearRoute) {
@@ -384,12 +423,14 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
     }
 
     // Update map when gpxData or userLocation changes
-    LaunchedEffect(gpxData, mapReady) {
+    LaunchedEffect(gpxData, matchedTrackPoints, mapReady) {
         val (map, style) = mapReady ?: return@LaunchedEffect
         val data = gpxData ?: return@LaunchedEffect
 
+        val track = matchedTrackPoints ?: data.trackPoints
+
         // Route line
-        val routePoints = data.trackPoints.map { Point.fromLngLat(it.lon, it.lat) }
+        val routePoints = track.map { Point.fromLngLat(it.lon, it.lat) }
         if (routePoints.isNotEmpty()) {
             val lineString = LineString.fromLngLats(routePoints)
             val routeSource = style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE_ID)
@@ -397,7 +438,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
 
             // Zoom to fit
             val boundsBuilder = LatLngBounds.Builder()
-            data.trackPoints.forEach { boundsBuilder.include(LatLng(it.lat, it.lon)) }
+            track.forEach { boundsBuilder.include(LatLng(it.lat, it.lon)) }
             data.stops.forEach { boundsBuilder.include(LatLng(it.lat, it.lon)) }
             map.animateCamera(CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), 80))
         }
@@ -434,7 +475,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
             ?.setGeoJson(FeatureCollection.fromFeatures(startEndFeatures))
 
         // Route direction arrows
-        val arrowFeatures = buildRouteArrowFeatures(data.trackPoints, ROUTE_ARROW_SPACING_METERS)
+        val arrowFeatures = buildRouteArrowFeatures(track, ROUTE_ARROW_SPACING_METERS)
         style.getSourceAs<GeoJsonSource>(ROUTE_ARROWS_SOURCE_ID)
             ?.setGeoJson(FeatureCollection.fromFeatures(arrowFeatures))
     }
