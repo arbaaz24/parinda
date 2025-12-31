@@ -44,6 +44,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
@@ -97,6 +98,8 @@ private const val ROUTE_ARROW_SPACING_METERS = 100f
 
 private const val NAV_TRIGGER_METERS = 500f
 private const val NAV_ZOOM_LEVEL = 17.0
+private const val NAV_TILT_DEGREES = 55.0
+private const val RECENTER_ZOOM_FACTOR = 1.3
 
 // GPS quality / smoothing (helps avoid huge jumps from bad fixes)
 private const val MAX_ACCEPTABLE_ACCURACY_METERS = 60f
@@ -303,6 +306,11 @@ fun RouteMapScreen(
             }
             val locForNav = snapped ?: newLoc
 
+            // Prefer route-aligned bearing in navigation mode (reduces jitter from phone/GPS bearing)
+            val routeAlignedBearing = track
+                ?.takeIf { it.size >= 2 }
+                ?.let { t -> routeBearingAtLocation(locForNav, t) }
+
             userLocation = locForNav
             isLoadingLocation = false
 
@@ -340,13 +348,19 @@ fun RouteMapScreen(
                 // Arrow marker (navigation mode)
                 if (isNavigationMode) {
                     val feature = Feature.fromGeometry(Point.fromLngLat(locForNav.longitude, locForNav.latitude))
-                    val bearingToUse = bearingDeg ?: 0f
+                    val bearingToUse = (routeAlignedBearing ?: bearingDeg?.toDouble() ?: 0.0)
                     feature.addNumberProperty("bearing", bearingToUse.toDouble())
                     style.getSourceAs<GeoJsonSource>(NAV_ARROW_SOURCE_ID)
                         ?.setGeoJson(FeatureCollection.fromFeature(feature))
 
                     if (isFollowingUser) {
-                        map.animateCamera(CameraUpdateFactory.newLatLngZoom(locForNav, NAV_ZOOM_LEVEL))
+                        val cam = CameraPosition.Builder()
+                            .target(locForNav)
+                            .zoom(NAV_ZOOM_LEVEL)
+                            .tilt(NAV_TILT_DEGREES)
+                            .bearing(bearingToUse)
+                            .build()
+                        map.animateCamera(CameraUpdateFactory.newCameraPosition(cam))
                     }
                 } else {
                     // Non-navigation: do NOT auto-recenter. User can pan/zoom freely.
@@ -875,7 +889,16 @@ fun RouteMapScreen(
                             isFollowingUser = true
                             userLocation?.let { loc ->
                                 mapReady?.let { (map, _) ->
-                                    map.animateCamera(CameraUpdateFactory.newLatLngZoom(loc, NAV_ZOOM_LEVEL))
+                                    val deltaZoom = kotlin.math.ln(RECENTER_ZOOM_FACTOR) / kotlin.math.ln(2.0)
+                                    val currentZoom = map.cameraPosition?.zoom ?: NAV_ZOOM_LEVEL
+                                    val newZoom = (currentZoom + deltaZoom).coerceIn(0.0, 22.0)
+                                    val cam = CameraPosition.Builder()
+                                        .target(loc)
+                                        .zoom(newZoom)
+                                        .tilt(NAV_TILT_DEGREES)
+                                        .bearing(map.cameraPosition?.bearing ?: 0.0)
+                                        .build()
+                                    map.animateCamera(CameraUpdateFactory.newCameraPosition(cam))
                                 }
                             }
                         }) {
@@ -1034,6 +1057,58 @@ private fun nearestPointOnRoute(user: LatLng, trackPoints: List<GpxPoint>, maxSn
     val dist = sqrt(bestDistSq)
     if (dist > maxSnapMeters) return null
     return toLatLonFromLocal(bestDx, bestDy)
+}
+
+private fun routeBearingAtLocation(user: LatLng, trackPoints: List<GpxPoint>): Double? {
+    if (trackPoints.size < 2) return null
+
+    val r = 6_371_000.0 // meters
+    val lat0 = Math.toRadians(user.latitude)
+    val lon0 = Math.toRadians(user.longitude)
+    val cosLat0 = cos(lat0)
+
+    fun toLocalMeters(lat: Double, lon: Double): Pair<Double, Double> {
+        val latR = Math.toRadians(lat)
+        val lonR = Math.toRadians(lon)
+        val dx = (lonR - lon0) * cosLat0 * r
+        val dy = (latR - lat0) * r
+        return dx to dy
+    }
+
+    var bestDistSq = Double.POSITIVE_INFINITY
+    var bestSegmentEndIndex = 1
+
+    var prev = toLocalMeters(trackPoints[0].lat, trackPoints[0].lon)
+    for (i in 1 until trackPoints.size) {
+        val cur = toLocalMeters(trackPoints[i].lat, trackPoints[i].lon)
+        val x1 = prev.first
+        val y1 = prev.second
+        val x2 = cur.first
+        val y2 = cur.second
+
+        val vx = x2 - x1
+        val vy = y2 - y1
+        val lenSq = vx * vx + vy * vy
+
+        val t = if (lenSq <= 0.0) 0.0 else {
+            val proj = (-(x1 * vx + y1 * vy)) / lenSq
+            proj.coerceIn(0.0, 1.0)
+        }
+
+        val cx = x1 + t * vx
+        val cy = y1 + t * vy
+        val distSq = cx * cx + cy * cy
+        if (distSq < bestDistSq) {
+            bestDistSq = distSq
+            bestSegmentEndIndex = i
+        }
+
+        prev = cur
+    }
+
+    val a = trackPoints[bestSegmentEndIndex - 1]
+    val b = trackPoints[bestSegmentEndIndex]
+    return bearingDegrees(LatLng(a.lat, a.lon), LatLng(b.lat, b.lon)).toDouble()
 }
 
 private fun buildRouteArrowFeatures(trackPoints: List<GpxPoint>, spacingMeters: Float): List<Feature> {
