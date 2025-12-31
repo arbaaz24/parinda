@@ -574,8 +574,8 @@ fun RouteMapScreen(
                                             Expression.interpolate(
                                                 Expression.linear(),
                                                 Expression.lineProgress(),
-                                                Expression.stop(0.0, Expression.rgb(140, 210, 255)),
-                                                Expression.stop(1.0, Expression.rgb(0, 90, 200))
+                                                Expression.stop(0.0, Expression.rgba(222, 71, 16, 1)),
+                                                Expression.stop(1.0, Expression.rgba(66, 9, 92, 1))
                                             )
                                         ),
                                         lineOpacity(0.75f),
