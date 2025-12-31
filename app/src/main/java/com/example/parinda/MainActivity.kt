@@ -89,7 +89,10 @@ class MainActivity : ComponentActivity() {
                                 currentScreen = AppScreen.Explore
                             }
                         }
-                        AppScreen.RouteMap -> RouteMapScreen(modifier = Modifier.padding(innerPadding))
+                        AppScreen.RouteMap -> RouteMapScreen(
+                            modifier = Modifier.padding(innerPadding),
+                            onBack = { currentScreen = AppScreen.Home }
+                        )
                     }
                 }
             }

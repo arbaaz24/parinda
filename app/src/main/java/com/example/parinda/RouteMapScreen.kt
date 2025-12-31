@@ -25,12 +25,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -50,6 +53,7 @@ import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory.*
 import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
@@ -60,6 +64,11 @@ import kotlin.math.roundToInt
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sqrt
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.Icons
+import androidx.compose.ui.graphics.Color as ComposeColor
 
 private const val DEFAULT_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 
@@ -96,7 +105,10 @@ private const val SNAP_TO_ROUTE_MAX_METERS = 35f
 private const val LOCATION_SMOOTHING_ALPHA = 0.35f
 
 @Composable
-fun RouteMapScreen(modifier: Modifier = Modifier) {
+fun RouteMapScreen(
+    modifier: Modifier = Modifier,
+    onBack: () -> Unit = {}
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -179,7 +191,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                 gpxData = null
                 matchedTrackPoints = null
                 gpxError = "Failed to parse GPX file: ${e.message}"
-                Log.e("RouteMapScreen", "GPX parsing error", e)
+                // Log.e("RouteMapScreen", "GPX parsing error", e)
             }
         }
     }
@@ -198,19 +210,19 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
         try {
             // Minimal use of matching: snap each input point (tracepoints).
             // No directions, no returned route geometry.
-            Log.d("RouteMapScreen", "Calling Mapbox matching: points=${data.trackPoints.size}")
+            Log.d("MapboxMapMatching", "Calling Mapbox matching: points=${data.trackPoints.size}")
             matchedTrackPoints = MapboxMapMatching.snapDrivingTrace(
                 accessToken = token,
                 trace = data.trackPoints,
                 httpClient = mapboxHttpClient
             )
             Log.d(
-                "RouteMapScreen",
+                "MapboxMapMatching",
                 "Mapbox matching done: snappedPoints=${matchedTrackPoints?.size ?: 0}"
             )
         } catch (e: Exception) {
             matchedTrackPoints = null
-            Log.e("RouteMapScreen", "Map matching error", e)
+            Log.e("MapboxMapMatching", "Map matching error", e)
         }
     }
 
@@ -319,7 +331,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                 if (nearStart || nearRoute) {
                     isNavigationMode = true
                     isFollowingUser = true
-                    Log.d("RouteMapScreen", "Entering navigation mode (nearStart=$nearStart nearRoute=$nearRoute distToRoute=$routeDistance)")
+                    // Log.d("RouteMapScreen", "Entering navigation mode (nearStart=$nearStart nearRoute=$nearRoute distToRoute=$routeDistance)")
                 }
             }
 
@@ -343,8 +355,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                         map.animateCamera(CameraUpdateFactory.newLatLngZoom(locForNav, NAV_ZOOM_LEVEL))
                     }
                 } else {
-                    // Default behavior (non-navigation): keep centering like before.
-                    map.animateCamera(CameraUpdateFactory.newLatLng(locForNav))
+                    // Non-navigation: do NOT auto-recenter. User can pan/zoom freely.
                 }
             }
         }
@@ -490,7 +501,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
 
         val toStartSource = style.getSourceAs<GeoJsonSource>(TO_START_ROUTE_SOURCE_ID)
 
-        Log.d("RouteMapScreen", "To-start routing: from=${from.latitude},${from.longitude} to start=${start.latitude},${start.longitude}")
+        // Log.d("RouteMapScreen", "To-start routing: from=${from.latitude},${from.longitude} to start=${start.latitude},${start.longitude}")
 
         // NOTE: Removed reverse-geocoding country check.
         // Geocoder can block the main thread on some devices/emulators and delay *all* location/UI updates.
@@ -506,7 +517,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
 
         // MVP: Draw a straight line from current → start ("as the crow flies")
         // This avoids dependency on external routing services (OSRM/Valhalla)
-        Log.d("RouteMapScreen", "Drawing straight line to start")
+        // Log.d("RouteMapScreen", "Drawing straight line to start")
         val lineString = LineString.fromLngLats(
             listOf(
                 Point.fromLngLat(from.longitude, from.latitude),
@@ -529,7 +540,13 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                         map.setStyle(DEFAULT_STYLE_URL) { style ->
                             // Add sources if not present
                             if (style.getSource(ROUTE_SOURCE_ID) == null) {
-                                style.addSource(GeoJsonSource(ROUTE_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
+                                // Enable lineMetrics so we can use `line-progress` for gradient styling.
+                                style.addSource(
+                                    GeoJsonSource(
+                                        ROUTE_SOURCE_ID,
+                                        GeoJsonOptions().withLineMetrics(true)
+                                    )
+                                )
                             }
                             if (style.getSource(WAYPOINTS_SOURCE_ID) == null) {
                                 style.addSource(GeoJsonSource(WAYPOINTS_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
@@ -551,9 +568,17 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                             if (style.getLayer(ROUTE_LAYER_ID) == null) {
                                 style.addLayer(
                                     LineLayer(ROUTE_LAYER_ID, ROUTE_SOURCE_ID).withProperties(
-                                        lineColor(Color.BLUE),
-                                        // Semi-transparent so overlaps read as darker and the path stays readable
-                                        lineOpacity(0.55f),
+                                        // Gradient from light blue (start) to dark blue (end).
+                                        // Overlaps will naturally appear darker due to blending.
+                                        lineGradient(
+                                            Expression.interpolate(
+                                                Expression.linear(),
+                                                Expression.lineProgress(),
+                                                Expression.stop(0.0, Expression.rgb(140, 210, 255)),
+                                                Expression.stop(1.0, Expression.rgb(0, 90, 200))
+                                            )
+                                        ),
+                                        lineOpacity(0.75f),
                                         lineWidth(5f),
                                         lineCap(Property.LINE_CAP_ROUND),
                                         lineJoin(Property.LINE_JOIN_ROUND)
@@ -648,12 +673,12 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                 )
                                 // Check Start/End symbols first, then stop dots
                                 val features = map.queryRenderedFeatures(box, START_END_LAYER_ID, WAYPOINTS_LAYER_ID)
-                                Log.d("RouteMapScreen", "Tap detected, features found: ${features.size}")
+                                // Log.d("RouteMapScreen", "Tap detected, features found: ${features.size}")
 
                                 if (features.isNotEmpty()) {
                                     val feature = features.first()
                                     val desc = feature.getStringProperty("desc") ?: ""
-                                    Log.d("RouteMapScreen", "Waypoint tapped, desc: $desc")
+                                    // Log.d("RouteMapScreen", "Waypoint tapped, desc: $desc")
 
                                     val geometry = feature.geometry()
                                     if (geometry is Point) {
@@ -700,6 +725,27 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                 }
             }
         )
+
+        // Back button overlay
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(12.dp)
+        ) {
+            Surface(
+                color = ComposeColor.White,
+                shape = CircleShape,
+                tonalElevation = 2.dp
+            ) {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = ComposeColor.Black
+                    )
+                }
+            }
+        }
 
         // In-map callout (Compose overlay). This is not a system popup and can later host images too.
         val callout = selectedCallout
@@ -774,7 +820,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                             )
                         }
                     }) {
-                        Text("Go to chosen route")
+                        Text("Go to Start Pt.")
                     }
                 } else {
                     // Show loading indicator when waiting for location
