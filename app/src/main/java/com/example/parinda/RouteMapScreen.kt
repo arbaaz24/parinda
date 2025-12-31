@@ -31,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -93,7 +95,7 @@ private const val END_ICON_ID = "end-icon"
 
 private const val ROUTE_ARROW_SPACING_METERS = 100f
 
-private const val NAV_TRIGGER_METERS = 50f
+private const val NAV_TRIGGER_METERS = 500f
 private const val NAV_ZOOM_LEVEL = 17.0
 
 // GPS quality / smoothing (helps avoid huge jumps from bad fixes)
@@ -112,16 +114,25 @@ fun RouteMapScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // State
-    var gpxData by remember { mutableStateOf<GpxData?>(null) }
-    var matchedTrackPoints by remember { mutableStateOf<List<GpxPoint>?>(null) }
-    var gpxError by remember { mutableStateOf<String?>(null) }
-    var isTracking by remember { mutableStateOf(false) }
-    var wantsToTrack by remember { mutableStateOf(false) }
+    val routeVm: RouteMapViewModel = viewModel()
+    LaunchedEffect(Unit) {
+        routeVm.restoreIfNeeded(context.contentResolver)
+    }
+
+    // Route state (kept in ViewModel so it survives rotation)
+    val gpxData = routeVm.gpxData
+    val matchedTrackPoints = routeVm.matchedTrackPoints
+    val navigationInstructions = routeVm.navigationInstructions
+    val matchingProgress = routeVm.matchingProgress
+    val gpxError = routeVm.gpxError
+
+    var currentInstruction by remember { mutableStateOf<NavigationInstruction?>(null) }
+    var isTracking by rememberSaveable { mutableStateOf(false) }
+    var wantsToTrack by rememberSaveable { mutableStateOf(false) }
     var userLocation by remember { mutableStateOf<LatLng?>(null) }
-    var isLoadingLocation by remember { mutableStateOf(false) }
-    var isNavigationMode by remember { mutableStateOf(false) }
-    var isFollowingUser by remember { mutableStateOf(true) }
+    var isLoadingLocation by rememberSaveable { mutableStateOf(false) }
+    var isNavigationMode by rememberSaveable { mutableStateOf(false) }
+    var isFollowingUser by rememberSaveable { mutableStateOf(true) }
     var lastBearingFrom by remember { mutableStateOf<LatLng?>(null) }
     var selectedCallout by remember { mutableStateOf<Pair<LatLng, String>?>(null) }
     var selectedCalloutScreenPoint by remember { mutableStateOf<PointF?>(null) }
@@ -130,15 +141,14 @@ fun RouteMapScreen(
     var lastRoutedFrom by remember { mutableStateOf<LatLng?>(null) }
     var lastRoutedAtMs by remember { mutableLongStateOf(0L) }
 
-    val mapboxHttpClient = remember { OkHttpClient() }
-
     val latestGpxData by rememberUpdatedState(gpxData)
     val latestRouteTrackPoints by rememberUpdatedState(matchedTrackPoints ?: gpxData?.trackPoints)
     val latestIsNavigationMode by rememberUpdatedState(isNavigationMode)
+    val latestInstructions by rememberUpdatedState(navigationInstructions)
 
     // Permission state
-    var hasLocationPermission by remember { mutableStateOf(false) }
-    var showLocationSettingsDialog by remember { mutableStateOf(false) }
+    var hasLocationPermission by rememberSaveable { mutableStateOf(false) }
+    var showLocationSettingsDialog by rememberSaveable { mutableStateOf(false) }
 
     // Check if location services are enabled
     fun isLocationEnabled(): Boolean {
@@ -180,53 +190,18 @@ fun RouteMapScreen(
         ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let {
-            try {
-                gpxError = null
-                context.contentResolver.openInputStream(it)?.use { inputStream ->
-                    val parsed = parseGpx(inputStream)
-                    gpxData = parsed
-                    matchedTrackPoints = null
-                }
-            } catch (e: Exception) {
-                gpxData = null
-                matchedTrackPoints = null
-                gpxError = "Failed to parse GPX file: ${e.message}"
-                // Log.e("RouteMapScreen", "GPX parsing error", e)
-            }
+            routeVm.onGpxSelected(it, context.contentResolver)
         }
     }
 
-    // Mapbox Map Matching: snap GPX track to the road network (improves alignment)
+    // Mapbox Map Matching (ViewModel keeps results across rotation)
     LaunchedEffect(gpxData) {
-        val data = gpxData ?: return@LaunchedEffect
-
-        val token = BuildConfig.MAPBOX_ACCESS_TOKEN.trim()
-        if (token.isBlank()) {
-            // Token not configured; keep raw GPX track.
-            return@LaunchedEffect
-        }
-
-        if (data.trackPoints.size < 2) return@LaunchedEffect
-        try {
-            // Minimal use of matching: snap each input point (tracepoints).
-            // No directions, no returned route geometry.
-            Log.d("MapboxMapMatching", "Calling Mapbox matching: points=${data.trackPoints.size}")
-            matchedTrackPoints = MapboxMapMatching.snapDrivingTrace(
-                accessToken = token,
-                trace = data.trackPoints,
-                httpClient = mapboxHttpClient
-            )
-            Log.d(
-                "MapboxMapMatching",
-                "Mapbox matching done: snappedPoints=${matchedTrackPoints?.size ?: 0}"
-            )
-        } catch (e: Exception) {
-            matchedTrackPoints = null
-            Log.e("MapboxMapMatching", "Map matching error", e)
-        }
+        routeVm.runMapMatchingIfPossible(BuildConfig.MAPBOX_ACCESS_TOKEN)
     }
 
     val mapView = remember {
+        // Suppress MapLibre's verbose HTTP request logs
+        org.maplibre.android.log.Logger.setVerbosity(org.maplibre.android.log.Logger.NONE)
         MapView(context).apply {
             contentDescription = "map"
         }
@@ -320,6 +295,15 @@ fun RouteMapScreen(
 
             userLocation = locForNav
             isLoadingLocation = false
+
+            // Update current navigation instruction based on proximity
+            if (latestIsNavigationMode && latestInstructions.isNotEmpty()) {
+                val upcoming = latestInstructions.firstOrNull { instr ->
+                    val instrLoc = LatLng(instr.location.lat, instr.location.lon)
+                    distanceMeters(locForNav, instrLoc) <= 500f  // Look ahead 500m
+                }
+                currentInstruction = upcoming ?: latestInstructions.firstOrNull()
+            }
 
             val start = data?.startPoint?.let { LatLng(it.lat, it.lon) }
 
@@ -747,6 +731,44 @@ fun RouteMapScreen(
             }
         }
 
+        // Navigation instruction banner (shown in navigation mode)
+        if (isNavigationMode && currentInstruction != null) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 60.dp, start = 16.dp, end = 16.dp)
+                    .fillMaxWidth(),
+                color = ComposeColor(0xFF1565C0),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                tonalElevation = 4.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = currentInstruction!!.instruction,
+                        color = ComposeColor.White,
+                        style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    if (currentInstruction!!.distanceMeters > 0) {
+                        val distanceText = if (currentInstruction!!.distanceMeters >= 1000) {
+                            String.format("%.1f km", currentInstruction!!.distanceMeters / 1000)
+                        } else {
+                            String.format("%.0f m", currentInstruction!!.distanceMeters)
+                        }
+                        Text(
+                            text = distanceText,
+                            color = ComposeColor.White.copy(alpha = 0.8f),
+                            style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+
         // In-map callout (Compose overlay). This is not a system popup and can later host images too.
         val callout = selectedCallout
         val calloutPoint = selectedCalloutScreenPoint
@@ -781,10 +803,21 @@ fun RouteMapScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(onClick = { 
-                gpxError = null
+                routeVm.clearGpxError()
                 filePickerLauncher.launch("*/*") 
             }) {
                 Text("Load GPX")
+            }
+
+            // Show snapping progress
+            matchingProgress?.let { (current, total) ->
+                Text(
+                    text = "Snapping to roads... $current/$total",
+                    color = ComposeColor.White,
+                    modifier = Modifier
+                        .background(ComposeColor.Black.copy(alpha = 0.6f), shape = CircleShape)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
             }
 
             // Show error if GPX parsing failed
