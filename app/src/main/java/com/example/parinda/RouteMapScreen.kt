@@ -126,7 +126,7 @@ fun RouteMapScreen(
     val matchingProgress = routeVm.matchingProgress
     val gpxError = routeVm.gpxError
 
-    var currentInstruction by remember { mutableStateOf<NavigationInstruction?>(null) }
+    var currentInstructionIndex by rememberSaveable { mutableIntStateOf(-1) }
     var isTracking by rememberSaveable { mutableStateOf(false) }
     var wantsToTrack by rememberSaveable { mutableStateOf(false) }
     var userLocation by remember { mutableStateOf<LatLng?>(null) }
@@ -145,6 +145,16 @@ fun RouteMapScreen(
     val latestRouteTrackPoints by rememberUpdatedState(matchedTrackPoints ?: gpxData?.trackPoints)
     val latestIsNavigationMode by rememberUpdatedState(isNavigationMode)
     val latestInstructions by rememberUpdatedState(navigationInstructions)
+
+    val currentInstruction = navigationInstructions.getOrNull(currentInstructionIndex)
+
+    LaunchedEffect(navigationInstructions) {
+        if (navigationInstructions.isEmpty()) {
+            currentInstructionIndex = -1
+        } else if (currentInstructionIndex !in navigationInstructions.indices) {
+            currentInstructionIndex = 0
+        }
+    }
 
     // Permission state
     var hasLocationPermission by rememberSaveable { mutableStateOf(false) }
@@ -296,13 +306,13 @@ fun RouteMapScreen(
             userLocation = locForNav
             isLoadingLocation = false
 
-            // Update current navigation instruction based on proximity
+            // Update current navigation instruction index based on proximity
             if (latestIsNavigationMode && latestInstructions.isNotEmpty()) {
-                val upcoming = latestInstructions.firstOrNull { instr ->
+                val upcomingIndex = latestInstructions.indexOfFirst { instr ->
                     val instrLoc = LatLng(instr.location.lat, instr.location.lon)
                     distanceMeters(locForNav, instrLoc) <= 500f  // Look ahead 500m
                 }
-                currentInstruction = upcoming ?: latestInstructions.firstOrNull()
+                currentInstructionIndex = if (upcomingIndex >= 0) upcomingIndex else 0
             }
 
             val start = data?.startPoint?.let { LatLng(it.lat, it.lon) }
@@ -735,9 +745,8 @@ fun RouteMapScreen(
         if (isNavigationMode && currentInstruction != null) {
             Surface(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 60.dp, start = 16.dp, end = 16.dp)
-                    .fillMaxWidth(),
+                    .align(Alignment.TopEnd)
+                    .padding(top = 60.dp, end = 16.dp),
                 color = ComposeColor(0xFF1565C0),
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
                 tonalElevation = 4.dp
