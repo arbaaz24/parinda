@@ -1,6 +1,7 @@
 package com.example.parinda
 
 import android.content.ContentResolver
+import android.content.Context
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,19 +35,23 @@ class RouteMapViewModel(
 
     private var inMemoryGpxBytes: ByteArray? = null
 
+    private var gpxCacheKey: String? = null
+
     private var gpxUriString: String?
         get() = savedStateHandle[KEY_GPX_URI]
         set(value) {
             savedStateHandle[KEY_GPX_URI] = value
         }
 
-    fun onGpxSelected(uri: Uri, contentResolver: ContentResolver) {
+    fun onGpxSelected(uri: Uri, contentResolver: ContentResolver, context: Context) {
+        val appContext = context.applicationContext
         gpxUriString = uri.toString()
         gpxError = null
         matchedTrackPoints = null
         navigationInstructions = emptyList()
         matchingProgress = null
         inMemoryGpxBytes = null
+        gpxCacheKey = null
 
         viewModelScope.launch {
             try {
@@ -55,8 +60,21 @@ class RouteMapViewModel(
                         ?: throw IllegalStateException("Unable to open GPX")
                 }
                 inMemoryGpxBytes = bytes
+                gpxCacheKey = withContext(Dispatchers.Default) {
+                    SnapCache.gpxBytesToCacheKeySha256Hex(bytes)
+                }
                 gpxData = withContext(Dispatchers.Default) {
                     parseGpx(ByteArrayInputStream(bytes))
+                }
+
+                // If we already have a cached snap for this GPX, use it immediately.
+                val key = gpxCacheKey
+                if (key != null) {
+                    val cached = withContext(Dispatchers.IO) { SnapCache.load(appContext, key) }
+                    if (cached != null) {
+                        matchedTrackPoints = cached.snappedPoints
+                        navigationInstructions = cached.instructions
+                    }
                 }
             } catch (e: Exception) {
                 gpxData = null
@@ -71,15 +89,28 @@ class RouteMapViewModel(
         gpxError = null
     }
 
-    fun restoreIfNeeded(contentResolver: ContentResolver) {
+    fun restoreIfNeeded(contentResolver: ContentResolver, context: Context) {
+        val appContext = context.applicationContext
         if (gpxData != null) return
 
         val bytes = inMemoryGpxBytes
         if (bytes != null && bytes.isNotEmpty()) {
             viewModelScope.launch {
                 try {
+                    gpxCacheKey = withContext(Dispatchers.Default) {
+                        SnapCache.gpxBytesToCacheKeySha256Hex(bytes)
+                    }
                     gpxData = withContext(Dispatchers.Default) {
                         parseGpx(ByteArrayInputStream(bytes))
+                    }
+
+                    val key = gpxCacheKey
+                    if (key != null) {
+                        val cached = withContext(Dispatchers.IO) { SnapCache.load(appContext, key) }
+                        if (cached != null) {
+                            matchedTrackPoints = cached.snappedPoints
+                            navigationInstructions = cached.instructions
+                        }
                     }
                 } catch (e: Exception) {
                     gpxData = null
@@ -98,8 +129,20 @@ class RouteMapViewModel(
                         ?: throw IllegalStateException("Unable to open GPX")
                 }
                 inMemoryGpxBytes = loaded
+                gpxCacheKey = withContext(Dispatchers.Default) {
+                    SnapCache.gpxBytesToCacheKeySha256Hex(loaded)
+                }
                 gpxData = withContext(Dispatchers.Default) {
                     parseGpx(ByteArrayInputStream(loaded))
+                }
+
+                val key = gpxCacheKey
+                if (key != null) {
+                    val cached = withContext(Dispatchers.IO) { SnapCache.load(appContext, key) }
+                    if (cached != null) {
+                        matchedTrackPoints = cached.snappedPoints
+                        navigationInstructions = cached.instructions
+                    }
                 }
             } catch (_: Exception) {
                 // If we can’t re-open (permissions), just leave it.
@@ -107,16 +150,35 @@ class RouteMapViewModel(
         }
     }
 
-    fun runMapMatchingIfPossible(mapboxToken: String) {
+    fun runMapMatchingIfPossible(mapboxToken: String, context: Context) {
+        val appContext = context.applicationContext
         val data = gpxData ?: return
         if (mapboxToken.isBlank()) return
         if (data.trackPoints.size < 2) return
+
+        // Requirement: do not call Mapbox at all for huge GPX
+        if (data.trackPoints.size > 10_000) return
 
         // If we already have a result for this session, don’t rerun
         if (matchedTrackPoints != null) return
 
         viewModelScope.launch {
             try {
+                // Try cache first (avoid duplicate Mapbox calls)
+                val key = gpxCacheKey ?: inMemoryGpxBytes?.let { bytes ->
+                    withContext(Dispatchers.Default) { SnapCache.gpxBytesToCacheKeySha256Hex(bytes) }
+                }
+                if (key != null) {
+                    gpxCacheKey = key
+                    val cached = withContext(Dispatchers.IO) { SnapCache.load(appContext, key) }
+                    if (cached != null) {
+                        matchedTrackPoints = cached.snappedPoints
+                        navigationInstructions = cached.instructions
+                        matchingProgress = null
+                        return@launch
+                    }
+                }
+
                 matchingProgress = 0 to ((data.trackPoints.size + 99) / 100)
                 val result = MapboxMapMatching.snapDrivingTrace(
                     accessToken = mapboxToken.trim(),
@@ -128,6 +190,14 @@ class RouteMapViewModel(
                 matchedTrackPoints = result.snappedPoints
                 navigationInstructions = result.instructions
                 matchingProgress = null
+
+                // Save to cache for next time.
+                val saveKey = gpxCacheKey
+                if (saveKey != null) {
+                    withContext(Dispatchers.IO) {
+                        SnapCache.save(appContext, saveKey, result)
+                    }
+                }
             } catch (_: Exception) {
                 matchedTrackPoints = null
                 navigationInstructions = emptyList()

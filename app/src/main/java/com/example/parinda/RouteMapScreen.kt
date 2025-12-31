@@ -116,7 +116,7 @@ fun RouteMapScreen(
 
     val routeVm: RouteMapViewModel = viewModel()
     LaunchedEffect(Unit) {
-        routeVm.restoreIfNeeded(context.contentResolver)
+        routeVm.restoreIfNeeded(context.contentResolver, context)
     }
 
     // Route state (kept in ViewModel so it survives rotation)
@@ -200,13 +200,13 @@ fun RouteMapScreen(
         ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri?.let {
-            routeVm.onGpxSelected(it, context.contentResolver)
+            routeVm.onGpxSelected(it, context.contentResolver, context)
         }
     }
 
     // Mapbox Map Matching (ViewModel keeps results across rotation)
     LaunchedEffect(gpxData) {
-        routeVm.runMapMatchingIfPossible(BuildConfig.MAPBOX_ACCESS_TOKEN)
+        routeVm.runMapMatchingIfPossible(BuildConfig.MAPBOX_ACCESS_TOKEN, context)
     }
 
     val mapView = remember {
