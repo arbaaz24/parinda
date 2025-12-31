@@ -13,6 +13,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+plan.docx
+value_prop.md
 
 # ============================
 # Android / Gradle

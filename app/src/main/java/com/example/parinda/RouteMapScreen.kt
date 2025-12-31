@@ -474,10 +474,7 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
         style.getSourceAs<GeoJsonSource>(START_END_SOURCE_ID)
             ?.setGeoJson(FeatureCollection.fromFeatures(startEndFeatures))
 
-        // Route direction arrows
-        val arrowFeatures = buildRouteArrowFeatures(track, ROUTE_ARROW_SPACING_METERS)
-        style.getSourceAs<GeoJsonSource>(ROUTE_ARROWS_SOURCE_ID)
-            ?.setGeoJson(FeatureCollection.fromFeatures(arrowFeatures))
+        // Route direction arrows removed for now.
     }
 
     // MVP: online routing from current location -> GPX start point (shown if same country)
@@ -549,15 +546,14 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                             if (style.getSource(NAV_ARROW_SOURCE_ID) == null) {
                                 style.addSource(GeoJsonSource(NAV_ARROW_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
                             }
-                            if (style.getSource(ROUTE_ARROWS_SOURCE_ID) == null) {
-                                style.addSource(GeoJsonSource(ROUTE_ARROWS_SOURCE_ID, FeatureCollection.fromFeatures(emptyArray())))
-                            }
 
                             // Route layer (blue line)
                             if (style.getLayer(ROUTE_LAYER_ID) == null) {
                                 style.addLayer(
                                     LineLayer(ROUTE_LAYER_ID, ROUTE_SOURCE_ID).withProperties(
                                         lineColor(Color.BLUE),
+                                        // Semi-transparent so overlaps read as darker and the path stays readable
+                                        lineOpacity(0.55f),
                                         lineWidth(5f),
                                         lineCap(Property.LINE_CAP_ROUND),
                                         lineJoin(Property.LINE_JOIN_ROUND)
@@ -565,21 +561,9 @@ fun RouteMapScreen(modifier: Modifier = Modifier) {
                                 )
                             }
 
-                            // Route arrows layer (direction along the route)
+                            // Navigation arrow image (also used by the navigation-mode marker)
                             if (style.getImage(NAV_ARROW_IMAGE_ID) == null) {
                                 style.addImage(NAV_ARROW_IMAGE_ID, createNavArrowBitmap())
-                            }
-                            if (style.getLayer(ROUTE_ARROWS_LAYER_ID) == null) {
-                                style.addLayer(
-                                    SymbolLayer(ROUTE_ARROWS_LAYER_ID, ROUTE_ARROWS_SOURCE_ID).withProperties(
-                                        iconImage(NAV_ARROW_IMAGE_ID),
-                                        iconAllowOverlap(true),
-                                        iconIgnorePlacement(true),
-                                        iconSize(0.55f),
-                                        iconRotate(Expression.get("bearing")),
-                                        iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP)
-                                    )
-                                )
                             }
 
                             // Waypoints layer (red circles)
